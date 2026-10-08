@@ -17,31 +17,35 @@ from ..config import settings
 
 log = logging.getLogger("srt_translator.engine")
 
-# پرامپت سیستمی مادر بر اساس اصول ترجمان و ماهیت زیرنویس‌های آکادمیک
-SYSTEM_PROMPT_TEMPLATE = """You are an elite academic English-to-Persian translator specializing in university-level lectures and scientific courses.
+# پرامپت سیستمی بهینه‌سازی‌شده برای زیرنویس‌های دانشگاهی
+SYSTEM_PROMPT_TEMPLATE = """You are an elite academic English-to-Persian translator specializing in university lectures and scientific courses.
 
-Target Academic Domain: {TOPIC}
+Target Academic Discipline / Subject: {TOPIC}
 
-CRITICAL RULES:
-1. SMART-PERSIAN TERMINOLOGY CONTRACT:
-   - Keep established technical terms, function/variable names, keywords, and acronyms in English inline (e.g. Backpropagation, Loss Function, Eigenvalue, Gradient Descent, Manifold, CNN, Overfitting).
-   - A widely accepted Persian equivalent may appear at most once, in parentheses, at the term's first occurrence.
-2. SENTENCE COHESION & ANTI-FRAGMENTATION:
-   - English sentences in subtitles are frequently sliced across multiple cues. In Persian, verbs go at the end of sentences (SOV order).
-   - Read the entire contextual window (including pre_context and post_context) to understand full complete thoughts before translating.
-   - Distribute the translated Persian sentences across the active cues naturally and smoothly.
-3. PRESERVE FORMULAS & SYMBOLS:
-   - Do NOT translate, modify, or flip mathematical formulas ($x_i$, $\\theta$, $O(n \\log n)$), numbers, programming code statements, or punctuation.
-4. STRICT STRUCTURED OUTPUT:
-   - You MUST output a strictly valid JSON object mapping every single cue key (C1, C2, ...) to its translated Persian text.
-   - Do NOT include markdown code fences (```json), greetings, or extra explanations. Output raw JSON only.
+GUIDELINES FOR ACADEMIC SUBTITLE TRANSLATION:
+1. NATURAL ACADEMIC FLUENCY (فارسی سلیس و دانشگاهی):
+   - Output must be fluent, natural, formal, and publishable Persian suitable for Iranian university students.
+   - Strictly AVOID awkward literal, word-by-word, or machine-translated structures.
+   - Combine the cues mentally into full English sentences before translating, then distribute the Persian translation naturally across the cue keys (C1, C2, etc.) so that the sentence flows smoothly across video subtitles.
+
+2. TERMINOLOGY & TECHNICAL JARGON (واژگان تخصصی):
+   - Only domain-specific scientific and engineering terms (e.g., Equilibrium, Statics, Stress, Strain, Loss Function, Backpropagation, Eigenvalue) should be treated with academic terminology care.
+   - For major technical terms, provide the standard Iranian academic equivalent, optionally followed by the English term in parentheses at first mention (e.g., 'استاتیک (Statics)', 'تعادل (Equilibrium)').
+   - NEVER put parenthesized English for basic everyday words (such as chapter, very, for, memory, problem, like, today). Translate common words into standard Persian directly!
+
+3. FORMULAS & SPECIAL NOTATION:
+   - Preserve equations ($F = ma$, $\\sigma = E \\cdot \\epsilon$), numbers, coordinate notations (2D, 3D), and mathematical symbols exactly as they are without distortion.
+
+4. STRICT JSON OUTPUT FORMAT:
+   - You MUST output a strictly valid JSON object mapping every single cue key (C1, C2, ..., Cn) to its translated Persian text.
+   - Every cue key provided in cues_to_translate MUST be present in the output.
+   - Output raw JSON only. Do not add markdown backticks, explanations, or greeting.
 {GLOSSARY_SECTION}"""
 
 
 def _extract_json_from_response(raw_text: str) -> dict[str, str]:
     """استخراج و تمیزکاری دیکشنری JSON از پاسخ مدل."""
     text = raw_text.strip()
-    # حذف تگ‌های احتمالی مارک‌داون
     if text.startswith("```json"):
         text = text[7:]
     elif text.startswith("```"):
@@ -50,7 +54,6 @@ def _extract_json_from_response(raw_text: str) -> dict[str, str]:
         text = text[:-3]
     text = text.strip()
 
-    # تلاش برای پارس مستقیم
     try:
         data = json.loads(text)
         if isinstance(data, dict):
@@ -58,7 +61,6 @@ def _extract_json_from_response(raw_text: str) -> dict[str, str]:
     except json.JSONDecodeError:
         pass
 
-    # تلاش با regex برای یافتن آکولادها
     match = re.search(r"\{.*\}", text, re.DOTALL)
     if match:
         try:
@@ -109,9 +111,9 @@ class TranslationEngine:
             "cues_to_translate": batch.get_cues_map(),
         }
         if batch.pre_context:
-            payload["pre_context_dialogue"] = batch.pre_context
+            payload["previous_dialogue_context"] = batch.pre_context
         if batch.post_context:
-            payload["post_context_dialogue"] = batch.post_context
+            payload["upcoming_dialogue_context"] = batch.post_context
 
         return json.dumps(payload, ensure_ascii=False, indent=2)
 
@@ -173,7 +175,7 @@ class TranslationEngine:
                             if attempt < self.max_retries_per_model - 1:
                                 await asyncio.sleep(1.0)
                                 continue
-                            break  # رفتن به مدل بعدی
+                            break
 
                         # موفقیت در ترجمه
                         return {k: parsed_dict[k] for k in expected_keys}
@@ -186,9 +188,8 @@ class TranslationEngine:
                         if attempt < self.max_retries_per_model - 1:
                             await asyncio.sleep(1.5 * (attempt + 1))
                             continue
-                        break  # تلاش‌های این مدل پایان یافت، برو به مدل بعدی
+                        break
 
-            # اگر همه مدل‌ها پس از تمام تلاش‌ها شکست خوردند
             raise RuntimeError(
                 f"همه مدل‌های موجود در زنجیره fallback شکست خوردند. آخرین خطا: {last_error}"
             )
@@ -213,10 +214,8 @@ class TranslationEngine:
 
         async with httpx.AsyncClient() as client:
             for batch in batches:
-                # ترجمه این دسته
                 trans_map = await self.translate_batch(batch, ctx, client=client)
 
-                # انتساب ترجمه به بلاک‌ها
                 for i, cue in enumerate(batch.cues):
                     key = f"C{i + 1}"
                     cue.translated_text = trans_map.get(key, cue.clean_text)

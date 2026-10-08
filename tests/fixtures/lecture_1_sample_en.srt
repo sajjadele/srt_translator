@@ -1,0 +1,139 @@
+1
+00:00:14,600 --> 00:00:19,120
+But before we go to chapter one, I would
+
+2
+00:00:16,640 --> 00:00:21,040
+like you to refresh your memory about
+
+3
+00:00:19,120 --> 00:00:23,640
+some of the principle of a static, which
+
+4
+00:00:21,040 --> 00:00:25,440
+is very important for me. Those are
+
+5
+00:00:23,640 --> 00:00:27,480
+equilibrium.
+
+6
+00:00:25,440 --> 00:00:30,040
+So everybody is
+
+7
+00:00:27,480 --> 00:00:33,080
+familiar with the equilibrium.
+
+8
+00:00:30,040 --> 00:00:35,440
+Of course, we have 2D problem and we
+
+9
+00:00:33,080 --> 00:00:38,600
+have 3D problem.
+
+10
+00:00:35,440 --> 00:00:40,520
+So 2D problem generally the forces have
+
+11
+00:00:38,600 --> 00:00:43,160
+X component and
+
+12
+00:00:40,520 --> 00:00:45,600
+Y component. So you have three equation.
+
+13
+00:00:43,160 --> 00:00:47,640
+I'm not going to put it down here
+
+14
+00:00:45,600 --> 00:00:49,600
+for equilibrium. So anytime you draw a
+
+15
+00:00:47,640 --> 00:00:51,760
+free body diagram,
+
+16
+00:00:49,600 --> 00:00:53,440
+there is a forces and there could be
+
+17
+00:00:51,760 --> 00:00:55,600
+moment, but the moment is one
+
+18
+00:00:53,440 --> 00:00:57,960
+dimensional. Usually if you are working
+
+19
+00:00:55,600 --> 00:01:01,080
+on the XY plane, so the moment will be
+
+20
+00:00:57,960 --> 00:01:03,760
+about the Z axis or the
+
+21
+00:01:01,080 --> 00:01:06,200
+K direction. Yes, so So those are the
+
+22
+00:01:03,760 --> 00:01:09,200
+three equation. In 3D,
+
+23
+00:01:06,200 --> 00:01:11,440
+you are going to have six equations.
+
+24
+00:01:09,200 --> 00:01:13,960
+And those six equations again is equal
+
+25
+00:01:11,440 --> 00:01:15,760
+fx equal to zero, sigma fy equal to
+
+26
+00:01:13,960 --> 00:01:17,520
+zero, sigma
+
+27
+00:01:15,760 --> 00:01:20,920
+fz equal to zero, which are the
+
+28
+00:01:17,520 --> 00:01:23,120
+component along XYZ. Also three moment,
+
+29
+00:01:20,920 --> 00:01:24,480
+which are the moment about X axis, Y
+
+30
+00:01:23,120 --> 00:01:26,320
+axis and
+
+31
+00:01:24,480 --> 00:01:27,960
+Z axis. You should be able to do that
+
+32
+00:01:26,320 --> 00:01:30,560
+through this exercise. One of these
+
+33
+00:01:27,960 --> 00:01:33,640
+problem are 3D and you are supposed to
+
+34
+00:01:30,560 --> 00:01:36,800
+do that. So and in this class,
+
+35
+00:01:33,640 --> 00:01:39,400
+we never use cross product. You should
