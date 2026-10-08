@@ -3904,8 +3904,7 @@
     "احتمال وقوع"
   ],
   "entropy": [
-    "آنتروپی",
-    "بی‌نظمی"
+    "آنتروپی (Entropy)"
   ],
   "dimension": [
     "بُعد",
@@ -4008,5 +4007,219 @@
   ],
   "generals": [
     "فرماندهان"
+  ],
+  "statics": [
+    "استاتیک (Statics)",
+    "ایستایی"
+  ],
+  "dynamics": [
+    "دینامیک (Dynamics)",
+    "پویایی"
+  ],
+  "equilibrium": [
+    "تعادل (Equilibrium)"
+  ],
+  "free body diagram": [
+    "نمودار جسم آزاد (Free Body Diagram)"
+  ],
+  "moment": [
+    "گشتاور (Moment)"
+  ],
+  "torque": [
+    "گشتاور پیچشی (Torque)",
+    "تورک"
+  ],
+  "stress": [
+    "تنش (Stress)"
+  ],
+  "strain": [
+    "کرنش (Strain)"
+  ],
+  "shear stress": [
+    "تنش برشی (Shear Stress)"
+  ],
+  "normal stress": [
+    "تنش عمودی (Normal Stress)"
+  ],
+  "bending moment": [
+    "لنگر خمشی (Bending Moment)"
+  ],
+  "shear force": [
+    "نیروی برشی (Shear Force)"
+  ],
+  "cross product": [
+    "ضرب برداری (Cross Product)"
+  ],
+  "dot product": [
+    "ضرب داخلی (Dot Product)"
+  ],
+  "right hand rule": [
+    "قاعده دست راست (Right-Hand Rule)"
+  ],
+  "mechanics of materials": [
+    "مقاومت مصالح (Mechanics of Materials)"
+  ],
+  "strength of materials": [
+    "مقاومت مصالح (Strength of Materials)"
+  ],
+  "fluid mechanics": [
+    "مکانیک سیالات (Fluid Mechanics)"
+  ],
+  "thermodynamics": [
+    "ترمودینامیک (Thermodynamics)"
+  ],
+  "heat transfer": [
+    "انتقال حرارت (Heat Transfer)"
+  ],
+  "viscosity": [
+    "گرانروی (Viscosity)",
+    "لزجت"
+  ],
+  "boundary layer": [
+    "لایه مرزی (Boundary Layer)"
+  ],
+  "reynolds number": [
+    "عدد رینولدز (Reynolds Number)"
+  ],
+  "laminar flow": [
+    "جریان آرام (Laminar Flow)"
+  ],
+  "turbulent flow": [
+    "جریان آشفته (Turbulent Flow)"
+  ],
+  "bernoulli": [
+    "برنولی (Bernoulli)"
+  ],
+  "navier-stokes": [
+    "ناویر-استوکس (Navier-Stokes)"
+  ],
+  "enthalpy": [
+    "آنتالپی (Enthalpy)"
+  ],
+  "carnot cycle": [
+    "چرخه کارنو (Carnot Cycle)"
+  ],
+  "young's modulus": [
+    "مدول یانگ (Young's Modulus)"
+  ],
+  "modulus of elasticity": [
+    "مدول الاستیسیته (Modulus of Elasticity)"
+  ],
+  "poisson's ratio": [
+    "ضریب پواسون (Poisson's Ratio)"
+  ],
+  "yield strength": [
+    "استحکام تسلیم (Yield Strength)"
+  ],
+  "tensile strength": [
+    "استحکام کششی (Tensile Strength)"
+  ],
+  "compressive strength": [
+    "استحکام فشاری (Compressive Strength)"
+  ],
+  "ductility": [
+    "شکل‌پذیری (Ductility)"
+  ],
+  "brittleness": [
+    "تردی (Brittleness)"
+  ],
+  "torsion": [
+    "پیچش (Torsion)"
+  ],
+  "deflection": [
+    "تغییر مکان (Deflection)",
+    "خیز"
+  ],
+  "truss": [
+    "خرپا (Truss)"
+  ],
+  "beam": [
+    "تیر (Beam)"
+  ],
+  "cantilever": [
+    "تیر طره‌ای (Cantilever)",
+    "کنسول"
+  ],
+  "buckling": [
+    "کمانش (Buckling)"
+  ],
+  "fatigue": [
+    "خستگی (Fatigue)"
+  ],
+  "creep": [
+    "خزش (Creep)"
+  ],
+  "finite element": [
+    "المان محدود (Finite Element)"
+  ],
+  "finite element method": [
+    "روش المان محدود (FEM)"
+  ],
+  "cad": [
+    "طراحی به کمک کامپیوتر (CAD)"
+  ],
+  "cam": [
+    "ساخت به کمک کامپیوتر (CAM)"
+  ],
+  "kinematics": [
+    "سینماتیک (Kinematics)"
+  ],
+  "kinetics": [
+    "سینتیک (Kinetics)"
+  ],
+  "vibration": [
+    "ارتعاشات (Vibrations)"
+  ],
+  "mechanical vibration": [
+    "ارتعاشات مکانیکی (Mechanical Vibration)"
+  ],
+  "natural frequency": [
+    "فرکانس طبیعی (Natural Frequency)"
+  ],
+  "damping": [
+    "میرایی (Damping)"
+  ],
+  "governor": [
+    "گاورنر (Governor)"
+  ],
+  "flywheel": [
+    "چرخ لنگر (Flywheel)",
+    "فلایویل"
+  ],
+  "gear ratio": [
+    "نسبت دنده (Gear Ratio)"
+  ],
+  "camshaft": [
+    "میل بادامک (Camshaft)"
+  ],
+  "crankshaft": [
+    "میل لنگ (Crankshaft)"
+  ],
+  "heat exchanger": [
+    "مبدل حرارتی (Heat Exchanger)"
+  ],
+  "conduction": [
+    "رسانش (Conduction)"
+  ],
+  "convection": [
+    "همرفت (Convection)"
+  ],
+  "radiation": [
+    "تابش (Radiation)"
+  ],
+  "internal combustion engine": [
+    "موتور احتراق داخلی (ICE)"
+  ],
+  "refrigeration": [
+    "تبرید (Refrigeration)"
+  ],
+  "machining": [
+    "ماشین‌کاری (Machining)"
+  ],
+  "casting": [
+    "ریخته‌گری (Casting)"
+  ],
+  "welding": [
+    "جوشکاری (Welding)"
   ]
 }

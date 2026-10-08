@@ -3,6 +3,7 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 TOPICS = [
+    ("⚙️ مهندسی مکانیک و هوافضا", "Mechanical & Aerospace Engineering"),
     ("🤖 یادگیری ماشین و هوش مصنوعی", "Machine Learning"),
     ("💻 علوم کامپیوتر و برنامه‌نویسی", "Computer Science"),
     ("📐 ریاضیات و فیزیک", "Mathematics & Physics"),
