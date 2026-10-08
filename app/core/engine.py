@@ -85,7 +85,7 @@ class TranslationEngine:
         api_key: Optional[str] = None,
         models: Optional[list[str]] = None,
         timeout: Optional[float] = None,
-        max_retries_per_model: int = 3,
+        max_retries_per_model: int = 4,
         glossary_manager: Optional[GlossaryManager] = None,
         inter_batch_delay: Optional[float] = None,
     ):
@@ -137,6 +137,7 @@ class TranslationEngine:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_payload},
             ],
+            "response_format": {"type": "json_object"},
             "temperature": 0.2,
         }
 
@@ -195,9 +196,16 @@ class TranslationEngine:
                             f"خطا در مدل {model_name} (تلاش {attempt + 1}): {last_error_str}"
                         )
 
-                        # مدیریت هوشمند Rate Limit (خطای ۴۲۹): توقف ۱۵ ثانیه‌ای قبل از تلاش مجدد
-                        is_rate_limited = "429" in err_msg or "rate" in err_msg.lower() or "resource_exhausted" in err_msg.lower()
-                        wait_seconds = 15.0 if is_rate_limited else (2.0 * (attempt + 1))
+                        # مدیریت هوشمند انواع خطاها: خطای ۴۲۹ (Rate Limit) و خطای ۵۰۳ (ترافیک لحظه‌ای سرور)
+                        is_overloaded = (
+                            "429" in err_msg
+                            or "503" in err_msg
+                            or "unavailable" in err_msg.lower()
+                            or "high demand" in err_msg.lower()
+                            or "rate" in err_msg.lower()
+                            or "resource_exhausted" in err_msg.lower()
+                        )
+                        wait_seconds = (7.0 * (attempt + 1)) if is_overloaded else (2.0 * (attempt + 1))
 
                         if attempt < self.max_retries_per_model - 1:
                             log.info(f"صبر به مدت {wait_seconds:.1f} ثانیه قبل از تلاش مجدد...")

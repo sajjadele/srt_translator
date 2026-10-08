@@ -27,7 +27,7 @@ class Settings(BaseModel):
         default_factory=lambda: [
             m.strip()
             for m in os.getenv(
-                "LLM_MODELS", "gemini-3.5-flash,gemini-3.8-flash"
+                "LLM_MODELS", "gemini-3.5-flash,gemini-3.1-flash-lite,gemini-3.8-flash"
             ).split(",")
             if m.strip()
         ]
