@@ -21,6 +21,15 @@ def test_extract_json_valid_and_fenced():
     res3 = _extract_json_from_response('Here is the translation:\n{"C1": "متن"}\nHope this helps!')
     assert res3 == {"C1": "متن"}
 
+    # JSON with unescaped LaTeX backslashes (e.g. \Sigma, \alpha, \vec)
+    raw_latex = r'''{
+  "C1": "$\Sigma F_x = 0$",
+  "C2": "زاویه \alpha و بردار \vec{v}"
+}'''
+    res4 = _extract_json_from_response(raw_latex)
+    assert "\\Sigma" in res4["C1"]
+    assert "\\alpha" in res4["C2"]
+
     # Invalid JSON
     with pytest.raises(ValueError):
         _extract_json_from_response("Not a JSON object at all")

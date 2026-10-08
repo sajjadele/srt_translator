@@ -16,7 +16,9 @@ class Settings(BaseModel):
 
     # LLM Router Settings
     llm_base_url: str = Field(
-        default_factory=lambda: os.getenv("LLM_BASE_URL", "https://router.bynara.id/v1")
+        default_factory=lambda: os.getenv(
+            "LLM_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai"
+        )
     )
     llm_api_key: str = Field(
         default_factory=lambda: os.getenv("LLM_API_KEY", "")
@@ -25,7 +27,7 @@ class Settings(BaseModel):
         default_factory=lambda: [
             m.strip()
             for m in os.getenv(
-                "LLM_MODELS", "nemotron-3-super-free"
+                "LLM_MODELS", "gemini-3.5-flash,gemini-3.8-flash"
             ).split(",")
             if m.strip()
         ]
@@ -48,6 +50,9 @@ class Settings(BaseModel):
     )
     request_timeout: float = Field(
         default_factory=lambda: float(os.getenv("REQUEST_TIMEOUT", "90.0"))
+    )
+    inter_batch_delay: float = Field(
+        default_factory=lambda: float(os.getenv("INTER_BATCH_DELAY", "3.5"))
     )
 
     # File Paths

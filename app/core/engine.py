@@ -54,14 +54,17 @@ def _extract_json_from_response(raw_text: str) -> dict[str, str]:
         text = text[:-3]
     text = text.strip()
 
+    # خنثی‌سازی بک‌اسلش‌های فرمول‌های ریاضی و لاتک (مانند \Sigma یا \theta) که در JSON معتبر نیستند
+    cleaned_text = re.sub(r'\\([^"\\/bfnrtu])', r'\\\\\1', text)
+
     try:
-        data = json.loads(text)
+        data = json.loads(cleaned_text)
         if isinstance(data, dict):
             return {str(k): str(v) for k, v in data.items()}
     except json.JSONDecodeError:
         pass
 
-    match = re.search(r"\{.*\}", text, re.DOTALL)
+    match = re.search(r"\{.*\}", cleaned_text, re.DOTALL)
     if match:
         try:
             data = json.loads(match.group(0))
@@ -84,6 +87,7 @@ class TranslationEngine:
         timeout: Optional[float] = None,
         max_retries_per_model: int = 3,
         glossary_manager: Optional[GlossaryManager] = None,
+        inter_batch_delay: Optional[float] = None,
     ):
         self.base_url = (base_url or settings.llm_base_url).rstrip("/")
         self.api_key = api_key or settings.llm_api_key
@@ -91,6 +95,9 @@ class TranslationEngine:
         self.timeout = timeout or settings.request_timeout
         self.max_retries_per_model = max_retries_per_model
         self.glossary = glossary_manager or GlossaryManager()
+        self.inter_batch_delay = (
+            inter_batch_delay if inter_batch_delay is not None else settings.inter_batch_delay
+        )
 
     def _build_system_prompt(self, batch: TranslationBatch, context: AcademicContext) -> str:
         """ایجاد پرامپت سیستمی سفارشی بر اساس موضوع و اصطلاحات مرتبط."""
@@ -234,7 +241,7 @@ class TranslationEngine:
                 if on_progress:
                     await on_progress(progress_pct, translated_so_far, total_cues)
 
-                # مکث کوتاه بین بسته‌ها جهت جلوگیری از اسپم شدن API
-                await asyncio.sleep(0.5)
+                # مکث هوشمند بین بسته‌ها جهت رعایت سقف نرخ درخواست (RPM) در ارائه‌دهندگان رایگان (نظیر جمنای)
+                await asyncio.sleep(self.inter_batch_delay)
 
         return doc
