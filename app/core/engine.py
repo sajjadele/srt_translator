@@ -98,6 +98,7 @@ class TranslationEngine:
         self.inter_batch_delay = (
             inter_batch_delay if inter_batch_delay is not None else settings.inter_batch_delay
         )
+        self._exhausted_models: set[str] = set()
 
     def _build_system_prompt(self, batch: TranslationBatch, context: AcademicContext) -> str:
         """ایجاد پرامپت سیستمی سفارشی بر اساس موضوع و اصطلاحات مرتبط."""
@@ -166,6 +167,9 @@ class TranslationEngine:
 
         try:
             for model_name in self.models:
+                if model_name in self._exhausted_models:
+                    continue
+
                 for attempt in range(self.max_retries_per_model):
                     try:
                         log.info(
@@ -196,7 +200,21 @@ class TranslationEngine:
                             f"خطا در مدل {model_name} (تلاش {attempt + 1}): {last_error_str}"
                         )
 
-                        # مدیریت هوشمند انواع خطاها: خطای ۴۲۹ (Rate Limit) و خطای ۵۰۳ (ترافیک لحظه‌ای سرور)
+                        # در صورت اتمام سقف روزانه، معطل نمان و بلافاصله به مدل بعدی سوئیچ کن
+                        is_daily_exhausted = (
+                            "per day" in err_msg.lower()
+                            or "perday" in err_msg.lower()
+                            or "retry in" in err_msg.lower()
+                            or ("quota exceeded" in err_msg.lower() and "429" in err_msg)
+                        )
+                        if is_daily_exhausted:
+                            log.warning(
+                                f"سقف روزانه مدل {model_name} تمام شده است. سوئیچ فوری به مدل بعدی در زنجیره..."
+                            )
+                            self._exhausted_models.add(model_name)
+                            break
+
+                        # مدیریت هوشمند انواع خطاها: خطای ۴۲۹ (Rate Limit لحظه‌ای) و خطای ۵۰۳ (ترافیک لحظه‌ای سرور)
                         is_overloaded = (
                             "429" in err_msg
                             or "503" in err_msg
