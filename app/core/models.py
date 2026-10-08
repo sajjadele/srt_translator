@@ -25,8 +25,8 @@ class SubtitleCue:
 
     @property
     def clean_text(self) -> str:
-        """متن تمیز شده بدون فاصله‌های زائد ابتدایی و انتهایی."""
-        return self.text.strip()
+        """متن تمیز شده بدون فاصله‌های زائد ابتدایی و انتهایی و نشانگرهای نامرئی."""
+        return self.text.strip().strip("\u200F\u200E\uFEFF")
 
     @property
     def is_sound_effect(self) -> bool:

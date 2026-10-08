@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 from typing import Union
 from .models import SubtitleCue, SubtitleDocument
+from .bidi_formatter import fix_bidi_text
 
 # الگوی شناسایی خط تایم‌کد زیرنویس
 # پشتیبانی از ویرگول (,) و نقطه (.) برای میلی‌ثانیه، و حذف متادیتای احتمالی مختصات
@@ -143,13 +144,20 @@ class SrtParser:
         return doc
 
     @classmethod
-    def serialize(cls, doc_or_cues: Union[SubtitleDocument, list[SubtitleCue]], use_translated: bool = True) -> str:
+    def serialize(
+        cls,
+        doc_or_cues: Union[SubtitleDocument, list[SubtitleCue]],
+        use_translated: bool = True,
+        apply_bidi_fix: bool = True,
+    ) -> str:
         """تبدیل لیست بلاک‌ها به خروجی رشته‌ای با استاندارد رسمی SRT."""
         cues = doc_or_cues.cues if isinstance(doc_or_cues, SubtitleDocument) else doc_or_cues
         blocks = []
 
         for idx, cue in enumerate(cues, start=1):
             text = cue.get_output_text() if use_translated else cue.clean_text
+            if apply_bidi_fix and use_translated:
+                text = fix_bidi_text(text)
             # هر بلاک شامل: شماره، زمان‌بندی و متن
             block = f"{idx}\r\n{cue.start_time} --> {cue.end_time}\r\n{text}"
             blocks.append(block)
@@ -162,10 +170,13 @@ class SrtParser:
         doc_or_cues: Union[SubtitleDocument, list[SubtitleCue]],
         output_path: Union[str, Path],
         use_translated: bool = True,
+        apply_bidi_fix: bool = True,
     ) -> Path:
         """ذخیره زیرنویس در فایل دیسک با انکودینگ UTF-8 استاندارد."""
         out = Path(output_path)
         out.parent.mkdir(parents=True, exist_ok=True)
-        content = cls.serialize(doc_or_cues, use_translated=use_translated)
+        content = cls.serialize(
+            doc_or_cues, use_translated=use_translated, apply_bidi_fix=apply_bidi_fix
+        )
         out.write_text(content, encoding="utf-8")
         return out

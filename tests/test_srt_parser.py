@@ -73,7 +73,7 @@ def test_serialization_roundtrip(tmp_path):
     reloaded = SrtParser.parse_file(out_file)
 
     assert reloaded.total_cues == 3
-    assert reloaded.cues[0].text == "به جلسه یادگیری ماشین خوش آمدید."
+    assert reloaded.cues[0].clean_text == "به جلسه یادگیری ماشین خوش آمدید."
     assert reloaded.cues[2].text == "Let's start with the basics."  # Untranslated falls back cleanly
 
 
