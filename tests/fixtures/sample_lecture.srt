@@ -1,0 +1,31 @@
+1
+00:00:01,000 --> 00:00:03,800
+Welcome back everyone to our deep learning lecture.
+
+2
+00:00:04,200 --> 00:00:07,100
+Today we are going to explore the mechanics
+
+3
+00:00:07,300 --> 00:00:09,800
+of gradient descent and backpropagation.
+
+4
+00:00:10,200 --> 00:00:13,600
+If you recall from last time, our loss function
+
+5
+00:00:13,800 --> 00:00:16,500
+measures the discrepancy between our model's predictions
+
+6
+00:00:16,700 --> 00:00:19,200
+and the true ground truth labels.
+
+7
+00:00:19,600 --> 00:00:23,400
+To minimize this error, we update the weights using
+
+8
+00:00:23,600 --> 00:00:27,500
+w = w - alpha * grad(L), where alpha is the learning rate.
