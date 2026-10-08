@@ -25,7 +25,7 @@ class Settings(BaseModel):
         default_factory=lambda: [
             m.strip()
             for m in os.getenv(
-                "LLM_MODELS", "minimax-m3-free,agnes-2.5-flash,mistral-medium-3-5"
+                "LLM_MODELS", "nemotron-3-super-free"
             ).split(",")
             if m.strip()
         ]
@@ -38,7 +38,7 @@ class Settings(BaseModel):
 
     # Batching & Context Parameters
     batch_size: int = Field(
-        default_factory=lambda: int(os.getenv("BATCH_SIZE", "15"))
+        default_factory=lambda: int(os.getenv("BATCH_SIZE", "25"))
     )
     pre_context_size: int = Field(
         default_factory=lambda: int(os.getenv("PRE_CONTEXT_SIZE", "2"))
@@ -47,7 +47,7 @@ class Settings(BaseModel):
         default_factory=lambda: int(os.getenv("POST_CONTEXT_SIZE", "2"))
     )
     request_timeout: float = Field(
-        default_factory=lambda: float(os.getenv("REQUEST_TIMEOUT", "60.0"))
+        default_factory=lambda: float(os.getenv("REQUEST_TIMEOUT", "90.0"))
     )
 
     # File Paths

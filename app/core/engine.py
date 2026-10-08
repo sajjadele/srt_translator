@@ -82,7 +82,7 @@ class TranslationEngine:
         api_key: Optional[str] = None,
         models: Optional[list[str]] = None,
         timeout: Optional[float] = None,
-        max_retries_per_model: int = 2,
+        max_retries_per_model: int = 3,
         glossary_manager: Optional[GlossaryManager] = None,
     ):
         self.base_url = (base_url or settings.llm_base_url).rstrip("/")
@@ -154,14 +154,14 @@ class TranslationEngine:
             client = httpx.AsyncClient()
             close_client = True
 
-        last_error: Optional[Exception] = None
+        last_error_str: str = "Unknown error"
 
         try:
             for model_name in self.models:
                 for attempt in range(self.max_retries_per_model):
                     try:
                         log.info(
-                            f"در حال ترجمه دسته {batch.batch_index} با مدل {model_name} (تلاش {attempt + 1})..."
+                            f"در حال ترجمه دسته {batch.batch_index} با مدل {model_name} (تلاش {attempt + 1}/{self.max_retries_per_model})..."
                         )
                         raw_resp = await self._call_llm_api(client, model_name, system_prompt, user_payload)
                         parsed_dict = _extract_json_from_response(raw_resp)
@@ -173,7 +173,7 @@ class TranslationEngine:
                                 f"مدل {model_name} کلیدهای {missing} را بازنگرداند."
                             )
                             if attempt < self.max_retries_per_model - 1:
-                                await asyncio.sleep(1.0)
+                                await asyncio.sleep(2.0)
                                 continue
                             break
 
@@ -181,17 +181,25 @@ class TranslationEngine:
                         return {k: parsed_dict[k] for k in expected_keys}
 
                     except Exception as ex:
+                        err_name = type(ex).__name__
+                        err_msg = str(ex) or "Timeout or network dropped"
+                        last_error_str = f"[{model_name}] {err_name}: {err_msg}"
                         log.warning(
-                            f"خطا در مدل {model_name} (تلاش {attempt + 1}): {ex}"
+                            f"خطا در مدل {model_name} (تلاش {attempt + 1}): {last_error_str}"
                         )
-                        last_error = ex
+
+                        # مدیریت هوشمند Rate Limit (خطای ۴۲۹): توقف ۱۵ ثانیه‌ای قبل از تلاش مجدد
+                        is_rate_limited = "429" in err_msg or "rate" in err_msg.lower() or "resource_exhausted" in err_msg.lower()
+                        wait_seconds = 15.0 if is_rate_limited else (2.0 * (attempt + 1))
+
                         if attempt < self.max_retries_per_model - 1:
-                            await asyncio.sleep(1.5 * (attempt + 1))
+                            log.info(f"صبر به مدت {wait_seconds:.1f} ثانیه قبل از تلاش مجدد...")
+                            await asyncio.sleep(wait_seconds)
                             continue
                         break
 
             raise RuntimeError(
-                f"همه مدل‌های موجود در زنجیره fallback شکست خوردند. آخرین خطا: {last_error}"
+                f"همه مدل‌های موجود در زنجیره fallback شکست خوردند. آخرین خطا: {last_error_str}"
             )
         finally:
             if close_client:
@@ -225,5 +233,8 @@ class TranslationEngine:
 
                 if on_progress:
                     await on_progress(progress_pct, translated_so_far, total_cues)
+
+                # مکث کوتاه بین بسته‌ها جهت جلوگیری از اسپم شدن API
+                await asyncio.sleep(0.5)
 
         return doc
