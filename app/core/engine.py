@@ -238,35 +238,51 @@ class TranslationEngine:
                     except Exception as ex:
                         err_name = type(ex).__name__
                         err_msg = str(ex) or "Timeout or network dropped"
+                        resp_body = ""
+                        status_code = 0
+                        if isinstance(ex, httpx.HTTPStatusError):
+                            try:
+                                resp_body = ex.response.text
+                                status_code = ex.response.status_code
+                            except Exception:
+                                pass
+
+                        full_err_text = f"{err_msg} {resp_body}".lower()
                         last_error_str = f"[{model_name}] {err_name}: {err_msg}"
                         log.warning(
                             f"خطا در مدل {model_name} (تلاش {attempt + 1}): {last_error_str}"
                         )
 
-                        # در صورت اتمام سقف روزانه، معطل نمان و بلافاصله به مدل بعدی سوئیچ کن
+                        # در صورت اتمام سقف روزانه یا سهمیه اکانت، بلافاصله به مدل بعدی سوئیچ کن
                         is_daily_exhausted = (
-                            "per day" in err_msg.lower()
-                            or "perday" in err_msg.lower()
-                            or "retry in" in err_msg.lower()
-                            or ("quota exceeded" in err_msg.lower() and "429" in err_msg)
+                            status_code == 429 and (
+                                "quota" in full_err_text
+                                or "per day" in full_err_text
+                                or "perday" in full_err_text
+                                or "exceeded" in full_err_text
+                                or "billing" in full_err_text
+                            )
+                        ) or (
+                            "quota exceeded" in full_err_text
+                            or "per day" in full_err_text
                         )
                         if is_daily_exhausted:
                             log.warning(
-                                f"سقف روزانه مدل {model_name} تمام شده است. سوئیچ فوری به مدل بعدی در زنجیره..."
+                                f"سقف سهمیه مدل {model_name} تمام شده است. سوئیچ فوری به مدل بعدی در زنجیره..."
                             )
                             self._exhausted_models.add(model_name)
                             break
 
-                        # مدیریت هوشمند انواع خطاها: خطای ۴۲۹ (Rate Limit لحظه‌ای) و خطای ۵۰۳ (ترافیک لحظه‌ای سرور)
+                        # مدیریت هوشمند خطای ۵۰۳ (ترافیک لحظه‌ای سرور) و خطای ۴۲۹ (Rate Limit ثانیه‌ای/لحظه‌ای)
                         is_overloaded = (
-                            "429" in err_msg
+                            status_code in (429, 503)
                             or "503" in err_msg
-                            or "unavailable" in err_msg.lower()
-                            or "high demand" in err_msg.lower()
-                            or "rate" in err_msg.lower()
-                            or "resource_exhausted" in err_msg.lower()
+                            or "unavailable" in full_err_text
+                            or "high demand" in full_err_text
+                            or "rate" in full_err_text
+                            or "resource_exhausted" in full_err_text
                         )
-                        wait_seconds = (7.0 * (attempt + 1)) if is_overloaded else (2.0 * (attempt + 1))
+                        wait_seconds = (6.0 * (attempt + 1)) if is_overloaded else (2.0 * (attempt + 1))
 
                         if attempt < self.max_retries_per_model - 1:
                             log.info(f"صبر به مدت {wait_seconds:.1f} ثانیه قبل از تلاش مجدد...")
