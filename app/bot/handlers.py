@@ -19,13 +19,19 @@ from ..core.batcher import ContextBatcher
 from ..core.engine import TranslationEngine
 from ..core.models import AcademicContext
 from ..core.srt_parser import SrtParser
-from .keyboards import get_topics_keyboard
+from .keyboards import get_topics_keyboard, get_cancel_keyboard
 
 log = logging.getLogger("srt_translator.bot")
 router = Router()
 
 # نگهداری کانتکست فعال هر کاربر در حافظه: user_id -> AcademicContext
 _USER_CONTEXTS: Dict[int, AcademicContext] = {}
+
+# نگهداری تسک‌های فعال در حال اجرا: job_id -> asyncio.Task
+_ACTIVE_TASKS: Dict[str, asyncio.Task] = {}
+
+# نگهداری شناسه جاب فعال هر کاربر: user_id -> job_id
+_USER_ACTIVE_JOBS: Dict[int, str] = {}
 
 # دایرکتوری موقت برای دانلود و تبدیل فایل‌ها
 TEMP_DIR = settings.base_dir / "data" / "temp"
@@ -77,9 +83,45 @@ async def handle_help(message: Message) -> None:
         "کافی است فایل با پسوند `.srt` را به صورت Document ارسال کنید.\n\n"
         "🔹 **اصول ترجمه:**\n"
         "• اصطلاحات تخصصی استاندارد دانشگاهی حفظ یا با پرانتز درج می‌شوند.\n"
-        "• تایم‌کدها و همگامی صدا و تصویر دست‌نخورده باقی می‌مانند."
+        "• تایم‌کدها و همگامی صدا و تصویر دست‌نخورده باقی می‌مانند.\n\n"
+        "🔹 **لغو ترجمه:**\n"
+        "در حین انجام ترجمه می‌توانید با کلیک روی دکمه «❌ لغو فرآیند ترجمه» یا ارسال دستور `/cancel` فرآیند را در هر لحظه متوقف کنید."
     )
     await message.answer(text, parse_mode="Markdown")
+
+
+@router.message(Command("cancel"))
+async def handle_cancel_command(message: Message) -> None:
+    """لغو فرآیند ترجمه جاری کاربر با دستور متنی."""
+    user_id = message.from_user.id if message.from_user else 0
+    job_id = _USER_ACTIVE_JOBS.get(user_id)
+
+    if not job_id or job_id not in _ACTIVE_TASKS:
+        await message.reply("⚠️ در حال حاضر هیچ فرآیند ترجمه فعالی برای شما در حال اجرا نیست.")
+        return
+
+    task = _ACTIVE_TASKS.get(job_id)
+    if task and not task.done():
+        task.cancel()
+        await message.reply("🚫 دستور لغو ارسال شد و فرآیند ترجمه متوقف گردید.")
+    else:
+        await message.reply("فرآیند ترجمه قبلاً تکمیل یا لغو شده است.")
+
+
+@router.callback_query(F.data.startswith("cancel:"))
+async def handle_cancel_callback(callback: CallbackQuery) -> None:
+    """لغو فرآیند ترجمه با کلیک روی دکمه شیشه‌ای."""
+    if not callback.data:
+        return
+
+    job_id = callback.data.split(":", 1)[1]
+    task = _ACTIVE_TASKS.get(job_id)
+
+    if task and not task.done():
+        task.cancel()
+        await callback.answer("فرآیند ترجمه متوقف شد.", show_alert=True)
+    else:
+        await callback.answer("این فرآیند قبلاً به پایان رسیده یا لغو شده است.", show_alert=False)
 
 
 @router.message(Command("topic"))
@@ -140,10 +182,28 @@ async def handle_srt_document(message: Message) -> None:
     user_id = message.from_user.id if message.from_user else 0
     ctx = get_user_context(user_id)
 
+    # بررسی عدم اجرای همزمان چند ترجمه توسط یک کاربر
+    if user_id in _USER_ACTIVE_JOBS:
+        active_job = _USER_ACTIVE_JOBS[user_id]
+        active_task = _ACTIVE_TASKS.get(active_job)
+        if active_task and not active_task.done():
+            await message.reply(
+                "⚠️ شما در حال حاضر یک فایل در حال ترجمه دارید!\n"
+                "لطفاً تا پایان آن منتظر بمانید یا با دکمه «❌ لغو فرآیند ترجمه» یا دستور `/cancel` آن را متوقف کنید.",
+                parse_mode="Markdown",
+            )
+            return
+
     # ایجاد پوشه کار موقت اختصاصی برای این جاب
     job_id = f"{user_id}_{int(time.time())}"
     job_dir = TEMP_DIR / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
+
+    # ثبت تسک جاری برای امکان لغو آنی
+    curr_task = asyncio.current_task()
+    if curr_task:
+        _ACTIVE_TASKS[job_id] = curr_task
+    _USER_ACTIVE_JOBS[user_id] = job_id
 
     input_path = job_dir / filename
     output_filename = f"{Path(filename).stem}_fa.srt"
@@ -153,6 +213,7 @@ async def handle_srt_document(message: Message) -> None:
         f"📥 **دریافت شد:** `{filename}`\n"
         f"📚 **موضوع درس:** `{ctx.topic}`\n\n"
         "⏳ در حال دانلود و اعتبارسنجی فایل...",
+        reply_markup=get_cancel_keyboard(job_id),
         parse_mode="Markdown",
     )
 
@@ -174,6 +235,7 @@ async def handle_srt_document(message: Message) -> None:
             f"📊 **تعداد بلاک‌ها:** {total_cues}\n"
             f"📚 **موضوع درس:** `{ctx.topic}`\n\n"
             f"🚀 **شروع فرآیند ترجمه هوشمند...**",
+            reply_markup=get_cancel_keyboard(job_id),
             parse_mode="Markdown",
         )
 
@@ -191,7 +253,11 @@ async def handle_srt_document(message: Message) -> None:
                     + _format_progress_bar(pct, done, total)
                 )
                 try:
-                    await status_msg.edit_text(progress_text, parse_mode="Markdown")
+                    await status_msg.edit_text(
+                        progress_text,
+                        reply_markup=get_cancel_keyboard(job_id),
+                        parse_mode="Markdown",
+                    )
                 except Exception as e:
                     log.debug(f"Progress message edit throttled: {e}")
 
@@ -216,17 +282,38 @@ async def handle_srt_document(message: Message) -> None:
         final_doc = FSInputFile(path=output_path, filename=output_filename)
         await message.reply_document(document=final_doc, caption=caption, parse_mode="Markdown")
 
-        # به‌روزرسانی پیام وضعیت
-        await status_msg.edit_text("✨ فرآیند ترجمه با موفقیت تکمیل شد و فایل برای شما ارسال گردید.")
+        # به‌روزرسانی پیام وضعیت و حذف دکمه لغو
+        await status_msg.edit_text(
+            "✨ فرآیند ترجمه با موفقیت تکمیل شد و فایل برای شما ارسال گردید.",
+            reply_markup=None,
+        )
+
+    except asyncio.CancelledError:
+        log.info(f"فرآیند ترجمه جاب {job_id} برای کاربر {user_id} با موفقیت لغو شد.")
+        try:
+            await status_msg.edit_text(
+                f"🚫 **فرآیند ترجمه لغو شد.**\n\n"
+                f"فایل `{filename}` پردازش نشد و منابع سرور آزاد شدند.",
+                reply_markup=None,
+                parse_mode="Markdown",
+            )
+        except Exception as e:
+            log.debug(f"Failed to edit status on cancel: {e}")
 
     except Exception as exc:
         log.error(f"خطا در پردازش زیرنویس برای کاربر {user_id}: {exc}", exc_info=True)
         await status_msg.edit_text(
             f"❌ **متأسفانه در فرآیند ترجمه خطایی رخ داد:**\n`{str(exc)}`\n\n"
             "لطفاً از صحت فایل یا کلید API اطمینان حاصل کرده و دوباره تلاش کنید.",
+            reply_markup=None,
             parse_mode="Markdown",
         )
     finally:
+        # خروج جاب از لیست فعال‌ها
+        _ACTIVE_TASKS.pop(job_id, None)
+        if _USER_ACTIVE_JOBS.get(user_id) == job_id:
+            _USER_ACTIVE_JOBS.pop(user_id, None)
+
         # پاک‌سازی فایل‌های موقت (T025)
         try:
             if job_dir.exists():

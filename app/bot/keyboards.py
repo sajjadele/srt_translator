@@ -20,3 +20,13 @@ def get_topics_keyboard() -> InlineKeyboardMarkup:
         for title, topic_val in TOPICS
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_cancel_keyboard(job_id: str) -> InlineKeyboardMarkup:
+    """ساخت کیبورد شیشه‌ای دکمه لغو فرآیند ترجمه."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="❌ لغو فرآیند ترجمه", callback_data=f"cancel:{job_id}")]
+        ]
+    )
+
