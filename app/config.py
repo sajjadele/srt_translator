@@ -28,7 +28,7 @@ class Settings(BaseModel):
             m.strip()
             for m in os.getenv(
                 "LLM_MODELS",
-                "gemini-3.1-flash-lite,gemini-flash-lite-latest,gemini-3-flash-preview,gemini-3.6-flash,gemini-3.7-flash",
+                "gemini-3.5-flash-lite,gemini-flash-lite-latest,gemini-3.6-flash",
             ).split(",")
             if m.strip()
         ]
@@ -41,7 +41,7 @@ class Settings(BaseModel):
 
     # Batching & Context Parameters
     batch_size: int = Field(
-        default_factory=lambda: int(os.getenv("BATCH_SIZE", "35"))
+        default_factory=lambda: int(os.getenv("BATCH_SIZE", "20"))
     )
     pre_context_size: int = Field(
         default_factory=lambda: int(os.getenv("PRE_CONTEXT_SIZE", "2"))

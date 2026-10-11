@@ -30,7 +30,26 @@ def test_extract_json_valid_and_fenced():
     assert "\\Sigma" in res4["C1"]
     assert "\\alpha" in res4["C2"]
 
-    # Invalid JSON
+    # Test with \unit (which previously crashed json.loads with Invalid \uXXXX escape)
+    # along with \theta, \times, \tau, \rho, \beta, \frac and trailing comma
+    raw_physics = r'''{
+  "C1": "طول یکه \unit length است",
+  "C2": "زاویه \theta و ضرب \times و گشتاور \tau",
+  "C3": "چگالی \rho و زاویه \beta و کسر \frac{1}{2}",
+}'''
+    res5 = _extract_json_from_response(raw_physics)
+    assert "\\unit" in res5["C1"]
+    assert "\\theta" in res5["C2"]
+    assert "\\times" in res5["C2"]
+    assert "\\tau" in res5["C2"]
+    assert "\\rho" in res5["C3"]
+
+    # Test emergency regex fallback on broken syntax
+    raw_broken = 'Some explanation {"C1": "ترجمه اول", "C2": "ترجمه دوم بدون بستن درست'
+    res6 = _extract_json_from_response(raw_broken)
+    assert res6["C1"] == "ترجمه اول"
+
+    # Invalid JSON without any cues
     with pytest.raises(ValueError):
         _extract_json_from_response("Not a JSON object at all")
 
@@ -113,3 +132,27 @@ async def test_translate_document_with_progress():
         assert translated_doc.cues[1].translated_text == "ترجمه ۲"
         assert len(progress_reports) == 1
         assert progress_reports[0] == (100.0, 2, 2)
+
+
+@pytest.mark.asyncio
+async def test_translate_batch_with_empty_cues():
+    # Cue 2 is completely empty (silence in lecture)
+    cues = [
+        SubtitleCue(index=1, start_time="00:00:01,000", end_time="00:00:02,000", text="Non-empty text"),
+        SubtitleCue(index=2, start_time="00:00:02,000", end_time="00:00:03,000", text="   "),
+        SubtitleCue(index=3, start_time="00:00:03,000", end_time="00:00:04,000", text="Another text"),
+    ]
+    batch = TranslationBatch(batch_index=0, cues=cues)
+    engine = TranslationEngine(api_key="test-key", models=["model-a"])
+
+    with patch.object(
+        engine, "_call_llm_api", new_callable=AsyncMock
+    ) as mock_call:
+        # LLM only returns keys for non-empty cues (omitting C2)
+        mock_call.return_value = '{"C1": "متن غیرخالی", "C3": "متن دیگر"}'
+        result = await engine.translate_batch(batch, AcademicContext())
+
+        assert result["C1"] == "متن غیرخالی"
+        assert result["C2"] == ""
+        assert result["C3"] == "متن دیگر"
+

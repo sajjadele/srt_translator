@@ -44,7 +44,7 @@ GUIDELINES FOR ACADEMIC SUBTITLE TRANSLATION:
 
 
 def _extract_json_from_response(raw_text: str) -> dict[str, str]:
-    """استخراج و تمیزکاری دیکشنری JSON از پاسخ مدل."""
+    """استخراج، تمیزکاری و بازیابی مقاوم دیکشنری JSON از پاسخ مدل."""
     text = raw_text.strip()
     if text.startswith("```json"):
         text = text[7:]
@@ -54,26 +54,57 @@ def _extract_json_from_response(raw_text: str) -> dict[str, str]:
         text = text[:-3]
     text = text.strip()
 
-    # خنثی‌سازی بک‌اسلش‌های فرمول‌های ریاضی و لاتک (مانند \Sigma یا \theta) که در JSON معتبر نیستند
-    cleaned_text = re.sub(r'\\([^"\\/bfnrtu])', r'\\\\\1', text)
-
+    # تلاش ۱: استخراج مستقیم در صورت معتبر بودن JSON استاندارد
     try:
-        data = json.loads(cleaned_text)
+        data = json.loads(text, strict=False)
         if isinstance(data, dict):
             return {str(k): str(v) for k, v in data.items()}
     except json.JSONDecodeError:
         pass
 
-    match = re.search(r"\{.*\}", cleaned_text, re.DOTALL)
-    if match:
-        try:
-            data = json.loads(match.group(0))
-            if isinstance(data, dict):
-                return {str(k): str(v) for k, v in data.items()}
-        except json.JSONDecodeError:
-            pass
+    # تلاش ۲: تمیزکاری بک‌اسلش‌ها، لاتک، کاماهای اضافی و استخراج بلوک اصلی
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    candidate = match.group(0) if match else text
 
-    raise ValueError(f"پاسخ مدل به فرمت معتبر JSON تبدیل نشد: {text[:200]}...")
+    # حذف کاماهای اضافی قبل از بسته شدن براکت یا کروشه
+    cleaned = re.sub(r",\s*([\}\]])", r"\1", candidate)
+
+    # فرار دادن \u هایی که با ۴ رقم هگزادسیمال دنبال نمی‌شوند (نظیر \unit یا \underline در لاتک)
+    cleaned = re.sub(r"\\u(?![0-9a-fA-F]{4})", r"\\\\u", cleaned)
+
+    # فرار دادن دستورات لاتک که با حروف کنترلی آغاز می‌شوند (نظیر \theta, \times, \beta, \rho, \frac, \nabla)
+    cleaned = re.sub(r"\\([bfrtn][a-zA-Z])", r"\\\\\1", cleaned)
+
+    # فرار دادن سایر بک‌اسلش‌های غیرمجاز JSON (نظیر \Sigma, \alpha, \vec, \hat, \dot)
+    cleaned = re.sub(r'\\([^"\\/bfnrtu])', r"\\\\\1", cleaned)
+
+    try:
+        data = json.loads(cleaned, strict=False)
+        if isinstance(data, dict):
+            return {str(k): str(v) for k, v in data.items()}
+    except json.JSONDecodeError:
+        pass
+
+    # تلاش ۳ (Emergency Fallback): استخراج مستقیم جفت‌کلیدهای C1..Cn از متن با Regex
+    # این مکانیزم حتی در صورت وجود نقص نحوی در بدنه یا نقل‌قول‌های نامتقارن، کلیدها را بازیابی می‌کند
+    pairs = re.findall(r'"(C\d+)"\s*:\s*"((?:[^"\\]|\\.)*)"', candidate, re.DOTALL)
+    if pairs:
+        result = {}
+        for k, v in pairs:
+            clean_v = v.replace('\\"', '"').replace('\\\\', '\\').replace('\\n', '\n')
+            result[k] = clean_v
+        return result
+
+    # تلاش ۴: الگو با تساهل بیشتر برای رشته‌های چندخطی با کوتیشن بازمانده
+    broad_pairs = re.findall(r'"(C\d+)"\s*:\s*"(.*?)"(?=\s*,\s*"C\d+"\s*:|\s*\}\s*$)', candidate, re.DOTALL)
+    if broad_pairs:
+        result = {}
+        for k, v in broad_pairs:
+            clean_v = v.replace('\\"', '"').replace('\\\\', '\\').replace('\\n', '\n')
+            result[k] = clean_v
+        return result
+
+    raise ValueError(f"پاسخ مدل به فرمت معتبر JSON تبدیل نشد: {text[:300]}...")
 
 
 class TranslationEngine:
@@ -179,7 +210,13 @@ class TranslationEngine:
                         parsed_dict = _extract_json_from_response(raw_resp)
 
                         # اعتبارسنجی تطابق کلیدها
-                        missing = expected_keys - set(parsed_dict.keys())
+                        # برای بلاک‌های خالی، از مدل انتظار کلید الزامی نداریم
+                        empty_keys = {
+                            f"C{i + 1}" for i, cue in enumerate(batch.cues) if not cue.clean_text
+                        }
+                        required_keys = expected_keys - empty_keys
+
+                        missing = required_keys - set(parsed_dict.keys())
                         if missing:
                             log.warning(
                                 f"مدل {model_name} کلیدهای {missing} را بازنگرداند."
@@ -189,8 +226,14 @@ class TranslationEngine:
                                 continue
                             break
 
-                        # موفقیت در ترجمه
-                        return {k: parsed_dict[k] for k in expected_keys}
+                        # موفقیت در ترجمه (بلاک‌های خالی با رشته تهی پر می‌شوند)
+                        result_map: dict[str, str] = {}
+                        for k in expected_keys:
+                            if k in parsed_dict:
+                                result_map[k] = parsed_dict[k]
+                            else:
+                                result_map[k] = ""
+                        return result_map
 
                     except Exception as ex:
                         err_name = type(ex).__name__
