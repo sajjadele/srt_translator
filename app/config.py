@@ -30,13 +30,17 @@ class Settings(BaseModel):
             if k.strip()
         ]
     )
+    # زنجیره‌ی مدل‌ها: هر مدل سهمیه‌ی روزانه‌ی مستقل ۵۰۰ درخواستی دارد،
+    # پس هرچه مدل بیشتر، ظرفیت کل بیشتر. ترتیب از مدل‌های پایدار به ناپایدار است.
+    # توجه: gemini-flash-lite-latest نام مستعار gemini-3.5-flash-lite است و عمداً نیامده.
     llm_models: list[str] = Field(
         default_factory=lambda: [
             m.strip()
             for m in os.getenv(
                 "LLM_MODELS",
                 "gemini-3.1-flash-lite,gemini-flash-latest,gemini-3.6-flash,"
-                "gemini-3-flash-preview,gemini-3.8-flash,gemini-3.5-flash-lite",
+                "gemini-3-flash-preview,gemini-3.5-flash-lite,gemini-3.8-flash,"
+                "gemini-3.5-flash,gemini-3.7-flash",
             ).split(",")
             if m.strip()
         ]
