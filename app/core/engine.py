@@ -310,13 +310,14 @@ class TranslationEngine:
         keys = [k for k in (api_keys if api_keys is not None else settings.llm_api_keys) if k]
         if not keys and api_key:
             keys = [api_key]
-        self.api_keys: list[str] = keys
+        # تکراری‌ها حذف می‌شوند؛ وگرنه یک سهمیه دو بار در زنجیره شمرده می‌شود
+        # و ظرفیت مؤثر نصف می‌گردد.
+        self.api_keys: list[str] = list(dict.fromkeys(keys))
 
         # برچسب‌های نمایشی به‌جای خودِ کلید، تا هیچ رازی وارد لاگ نشود
         self._key_labels: dict[str, str] = {}
         for index, key in enumerate(self.api_keys):
-            unique_keys = list(dict.fromkeys(self.api_keys)).index(key) + 1
-            self._key_labels[key] = f"کلید #{unique_keys} ({_mask_secret(key)})"
+            self._key_labels[key] = f"کلید #{index + 1} ({_mask_secret(key)})"
 
         self._dead_models: dict[str, str] = {}
         self._exhausted_pairs: set[tuple[str, str]] = set()
