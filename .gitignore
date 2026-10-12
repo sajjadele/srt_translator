@@ -6,4 +6,5 @@ __pycache__/
 .pytest_cache/
 *.srt.tmp
 data/temp/
+data/checkpoints/
 *.log

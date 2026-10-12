@@ -16,7 +16,8 @@ from aiogram.types import CallbackQuery, FSInputFile, Message
 
 from ..config import settings
 from ..core.batcher import ContextBatcher
-from ..core.engine import TranslationEngine
+from ..core.checkpoint import CheckpointStore, source_fingerprint
+from ..core.engine import PartialTranslationError, TranslationEngine
 from ..core.models import AcademicContext
 from ..core.srt_parser import SrtParser
 from .keyboards import get_topics_keyboard, get_cancel_keyboard
@@ -36,6 +37,18 @@ _USER_ACTIVE_JOBS: Dict[int, str] = {}
 # دایرکتوری موقت برای دانلود و تبدیل فایل‌ها
 TEMP_DIR = settings.base_dir / "data" / "temp"
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
+
+# نگهداری پیشرفت ترجمه‌های نیمه‌تمام تا با ارسال دوباره‌ی همان فایل ادامه پیدا کنند
+CHECKPOINT_STORE = CheckpointStore()
+
+
+def _escape_html(text: str) -> str:
+    """فرار دادن کاراکترهای HTML؛ متن خطای سرویس شامل < و > است و تلگرام آن را تفسیر می‌کند."""
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
 
 
 def get_user_context(user_id: int) -> AcademicContext:
@@ -264,8 +277,18 @@ async def handle_srt_document(message: Message) -> None:
         # اجرای ترجمه
         engine = TranslationEngine()
         batcher = ContextBatcher()
+        source_hash = source_fingerprint(input_path)
+        resumed = CHECKPOINT_STORE.load(source_hash)
+        if not (resumed and resumed.total_cues == total_cues and resumed.completed_count):
+            CHECKPOINT_STORE.clear(source_hash)
+
         translated_doc = await engine.translate_document(
-            subtitle_doc, context=ctx, on_progress=on_progress, batcher=batcher
+            subtitle_doc,
+            context=ctx,
+            on_progress=on_progress,
+            batcher=batcher,
+            checkpoint_store=CHECKPOINT_STORE,
+            source_hash=source_hash,
         )
 
         # ذخیره فایل ترجمه شده
@@ -288,6 +311,44 @@ async def handle_srt_document(message: Message) -> None:
             reply_markup=None,
         )
 
+    except PartialTranslationError as exc:
+        log.warning(
+            f"ترجمه‌ی نیمه‌کاره برای کاربر {user_id}: {exc.completed}/{exc.total} بلاک — {exc}"
+        )
+
+        # ارسال نتیجه‌ی نیمه‌کاره به‌جای دور ریختن کار انجام‌شده
+        partial_path = job_dir / f"{Path(filename).stem}_partial_fa.srt"
+        try:
+            SrtParser.write_file(exc.doc, partial_path, use_translated=True)
+            partial_doc = FSInputFile(
+                path=partial_path, filename=Path(filename).stem + "_partial_fa.srt"
+            )
+            await message.reply_document(
+                document=partial_doc,
+                caption=(
+                    f"⚠️ **ترجمه به‌طور کامل انجام نشد.**\n\n"
+                    f"✅ **بلاک‌های ترجمه‌شده:** {exc.completed} از {exc.total} ({exc.progress_pct:.0f}٪)\n"
+                    f"📚 **موضوع:** {ctx.topic}\n\n"
+                    f"کار انجام‌شده از بین نرفت. برای تکمیل، همین فایل را دوباره ارسال کنید؛ "
+                    f"ترجمه از همین‌جا ادامه می‌یابد و فقط بخش‌های ترجمه‌نشده پردازش می‌شوند.\n\n"
+                    f"<code>{_escape_html(str(exc.cause or exc))[:300]}</code>"
+                ),
+                parse_mode="HTML",
+            )
+        except Exception as write_error:
+            log.warning(f"نوشتن فایل نیمه‌کاره ناموفق بود: {write_error}")
+
+        try:
+            await status_msg.edit_text(
+                f"⚠️ **ترجمه ناقص:** {exc.completed} از {exc.total} بلاک انجام شد "
+                f"({exc.progress_pct:.0f}٪).\n\n"
+                "نتیجه‌ی نیمه‌کاره ارسال شد. برای تکمیل، همین فایل را دوباره بفرستید.",
+                reply_markup=None,
+                parse_mode="Markdown",
+            )
+        except Exception as e:
+            log.debug(f"Failed to edit status on partial failure: {e}")
+
     except asyncio.CancelledError:
         log.info(f"فرآیند ترجمه جاب {job_id} برای کاربر {user_id} با موفقیت لغو شد.")
         try:
@@ -303,10 +364,12 @@ async def handle_srt_document(message: Message) -> None:
     except Exception as exc:
         log.error(f"خطا در پردازش زیرنویس برای کاربر {user_id}: {exc}", exc_info=True)
         await status_msg.edit_text(
-            f"❌ **متأسفانه در فرآیند ترجمه خطایی رخ داد:**\n`{str(exc)}`\n\n"
-            "لطفاً از صحت فایل یا کلید API اطمینان حاصل کرده و دوباره تلاش کنید.",
+            f"❌ **متأسفانه در فرآیند ترجمه خطایی رخ داد:**\n"
+            f"`{_escape_html(str(exc))[:600]}`\n\n"
+            "لطفاً کمی بعد دوباره تلاش کنید. اگر قبلاً بخشی از این فایل ترجمه شده باشد، "
+            "با ارسال دوباره‌ی همان فایل از همان‌جا ادامه داده می‌شود.",
             reply_markup=None,
-            parse_mode="Markdown",
+            parse_mode="HTML",
         )
     finally:
         # خروج جاب از لیست فعال‌ها

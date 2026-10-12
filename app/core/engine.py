@@ -11,6 +11,7 @@ from typing import Awaitable, Callable, Optional
 import httpx
 
 from .batcher import ContextBatcher
+from .checkpoint import CheckpointStore, snapshot_document
 from .glossary import GlossaryManager
 from .models import AcademicContext, SubtitleDocument, TranslationBatch
 from ..config import settings
@@ -107,6 +108,180 @@ def _extract_json_from_response(raw_text: str) -> dict[str, str]:
     raise ValueError(f"پاسخ مدل به فرمت معتبر JSON تبدیل نشد: {text[:300]}...")
 
 
+# ---------------------------------------------------------------------------
+# طبقه‌بندی خطاهای سرویس LLM
+# ---------------------------------------------------------------------------
+
+# سهمیه‌ی روزانه (Free Tier) در سطح پروژه/کلید است؛ با تعویض مدل برطرف نمی‌شود.
+TRIAGE_DAILY_QUOTA = "daily_quota"
+# محدودیت نرخ لحظه‌ای (RPM/TPM) — گذراست و باید دوباره تلاش شود.
+TRIAGE_RATE_LIMIT = "rate_limit"
+# مدل وجود ندارد یا برای این اکانت فعال نیست — تلاش مجدد فایده‌ای ندارد.
+TRIAGE_MODEL_UNAVAILABLE = "model_unavailable"
+# خطای غیرقابل بازیابی برای این مدل (کلید، مجوز، آرگومان نامعتبر).
+TRIAGE_FATAL = "fatal"
+# فشار لحظه‌ای سرور (503 / UNAVAILABLE / RESOURCE_EXHAUSTED بدون متریک مشخص).
+TRIAGE_OVERLOADED = "overloaded"
+# خطای گذرای نامشخص (تایم‌اوت، قطع شبکه و…).
+TRIAGE_TRANSIENT = "transient"
+
+# نشانه‌های «سقف روزانه» — باید پیش از نشانه‌های دقیقه‌ای بررسی شوند.
+_DAILY_QUOTA_MARKERS = (
+    "free_tier_requests",
+    "requests per day",
+    "per day",
+    "perday",
+    "per  day",
+    "daily",
+)
+
+# نشانه‌های «سقف دقیقه‌ای» که با تلاش مجدد قابل بازیابی هستند.
+_RATE_LIMIT_MARKERS = (
+    "per minute",
+    "perminute",
+    "requests per minute",
+    "generate_content_requests",
+)
+
+_MODEL_UNAVAILABLE_MARKERS = (
+    "is no longer available",
+    "not found",
+    "not supported",
+    "unsupported model",
+    "unknown model",
+)
+
+_FATAL_MARKERS = (
+    "api key not valid",
+    "invalid api key",
+    "unauthenticated",
+    "permission denied",
+    "permission_error",
+    "invalid argument",
+    "invalid_request_error",
+)
+
+_OVERLOADED_MARKERS = (
+    "high demand",
+    "unavailable",
+    "overloaded",
+    "internal error",
+    "deadline exceeded",
+)
+
+# سقف انتظار برای تلاش مجدد؛ هر چیز بزرگ‌تر یعنی اختلال طولانی و باید به مدل بعدی برود.
+_MAX_RETRY_WAIT_SECONDS = 120.0
+
+_RETRY_IN_RE = re.compile(r"retry in\s+((?:\d+(?:\.\d+)?\s*[hms])+)", re.IGNORECASE)
+_DURATION_PART_RE = re.compile(r"(\d+(?:\.\d+)?)\s*([hms])")
+_DURATION_FACTORS = {"h": 3600.0, "m": 60.0, "s": 1.0}
+
+
+def _parse_retry_delay(text: str) -> Optional[float]:
+    """استخراج مدت انتظار پیشنهادی سرویس از متن خطا، مثل «Please retry in 18h11m8s» یا «in 24s»."""
+    if not text:
+        return None
+    match = _RETRY_IN_RE.search(text)
+    if not match:
+        return None
+
+    total = 0.0
+    matched_any = False
+    for value, unit in _DURATION_PART_RE.findall(match.group(1)):
+        matched_any = True
+        total += float(value) * _DURATION_FACTORS[unit.lower()]
+    return total if matched_any else None
+
+
+def _humanize_duration(seconds: float) -> str:
+    """تبدیل ثانیه به متن فارسی خوانا، مثل «۱۸ ساعت و ۱۱ دقیقه»."""
+    seconds = max(0.0, seconds)
+    parts: list[str] = []
+    hours, remainder = divmod(int(seconds), 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        parts.append(f"{hours} ساعت")
+    if minutes:
+        parts.append(f"{minutes} دقیقه")
+    if secs and not hours:
+        parts.append(f"{secs} ثانیه")
+    return " و ".join(parts) if parts else "چند لحظه"
+
+
+def _mask_secret(value: str) -> str:
+    """نمایش غیرقابل‌بازگشت کلید؛ هرگز کلید واقعی وارد لاگ یا پیام خطا نمی‌شود."""
+    if not value:
+        return "(تنظیم نشده)"
+    return f"{value[:6]}…({len(value)} chars)"
+
+
+def _triage_error(status_code: int, body: str, err_msg: str) -> tuple[str, float]:
+    """تشخیص نوع خطای سرویس و تعیین زمان انتظار مناسب.
+
+    تفاوت کلیدی: خطای ۴۲۹ با متریک ``free_tier_requests`` یعنی سقف **روزانه** و
+    باید مدل برای ادامه‌ی همین اجرا کنار گذاشته شود، در حالی که خطای ۴۲۹ با
+    متریک ``generate_content_requests`` یعنی محدودیت **دقیقه‌ای** و باید صرفاً
+    با تأخیر کوتاه دوباره تلاش شود.
+    """
+    full_text = f"{err_msg} {body}".lower()
+    service_delay = _parse_retry_delay(body) or _parse_retry_delay(err_msg)
+
+    # ۱) مدل نامعتبر یا غیرفعال — بدون تلاش مجدد کنار گذاشته می‌شود
+    if status_code == 404 or any(m in full_text for m in _MODEL_UNAVAILABLE_MARKERS):
+        return TRIAGE_MODEL_UNAVAILABLE, 0.0
+
+    # ۲) سقف روزانه — اول بررسی می‌شود چون متن آن کلمه‌ی «quota» هم دارد
+    if status_code == 429 and any(m in full_text for m in _DAILY_QUOTA_MARKERS):
+        return TRIAGE_DAILY_QUOTA, 0.0
+
+    # ۳) محدودیت نرخ لحظه‌ای — با احترام به زمان اعلام‌شده توسط سرویس
+    if status_code == 429 or any(m in full_text for m in _RATE_LIMIT_MARKERS):
+        if service_delay is not None and service_delay > _MAX_RETRY_WAIT_SECONDS:
+            return TRIAGE_DAILY_QUOTA, 0.0
+        wait = 12.0
+        if service_delay is not None:
+            wait = max(wait, service_delay + 1.5)
+        return TRIAGE_RATE_LIMIT, min(wait, _MAX_RETRY_WAIT_SECONDS)
+
+    # ۴) خطاهای غیرقابل بازیابی برای این مدل
+    if any(m in full_text for m in _FATAL_MARKERS) or status_code in (400, 401, 403):
+        return TRIAGE_FATAL, 0.0
+
+    # ۵) فشار لحظه‌ای سرور
+    if status_code == 503 or any(m in full_text for m in _OVERLOADED_MARKERS):
+        return TRIAGE_OVERLOADED, 12.0
+
+    return TRIAGE_TRANSIENT, 4.0
+
+
+class PartialTranslationError(RuntimeError):
+    """ترجمه به‌طور کامل انجام نشد اما بخش قابل‌توجهی از کار حفظ شده است.
+
+    این خطا به‌جای دور ریختن کل سند صادر می‌شود؛ سندِ نیمه‌ترجمه‌شده از طریق
+    صفت ``doc`` در دسترس است و checkpoint آن برای ادامه‌ی کار ذخیره شده.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        doc: SubtitleDocument,
+        completed: int,
+        total: int,
+        cause: Optional[BaseException] = None,
+    ):
+        super().__init__(message)
+        self.doc = doc
+        self.completed = completed
+        self.total = total
+        self.cause = cause
+
+    @property
+    def progress_pct(self) -> float:
+        if self.total <= 0:
+            return 0.0
+        return (self.completed / self.total) * 100.0
+
+
 class TranslationEngine:
     """موتور ترجمه آسنکرون با پشتیبانی از چند مدل، زنجیره Fallback و Retry هوشمند."""
 
@@ -119,9 +294,9 @@ class TranslationEngine:
         max_retries_per_model: int = 4,
         glossary_manager: Optional[GlossaryManager] = None,
         inter_batch_delay: Optional[float] = None,
+        api_keys: Optional[list[str]] = None,
     ):
         self.base_url = (base_url or settings.llm_base_url).rstrip("/")
-        self.api_key = api_key or settings.llm_api_key
         self.models = models or settings.llm_models
         self.timeout = timeout or settings.request_timeout
         self.max_retries_per_model = max_retries_per_model
@@ -129,7 +304,28 @@ class TranslationEngine:
         self.inter_batch_delay = (
             inter_batch_delay if inter_batch_delay is not None else settings.inter_batch_delay
         )
-        self._exhausted_models: set[str] = set()
+
+        # زنجیره‌ی کلیدها: سهمیه در سطح کلید است، پس با اتمام یک کلید سراغ بعدی می‌رویم.
+        # LLM_API_KEYS مقدم است و در نبود آن به LLM_API_KEY برمی‌گردیم تا سازگاری حفظ شود.
+        keys = [k for k in (api_keys if api_keys is not None else settings.llm_api_keys) if k]
+        if not keys and api_key:
+            keys = [api_key]
+        self.api_keys: list[str] = keys
+
+        # برچسب‌های نمایشی به‌جای خودِ کلید، تا هیچ رازی وارد لاگ نشود
+        self._key_labels: dict[str, str] = {}
+        for index, key in enumerate(self.api_keys):
+            unique_keys = list(dict.fromkeys(self.api_keys)).index(key) + 1
+            self._key_labels[key] = f"کلید #{unique_keys} ({_mask_secret(key)})"
+
+        self._dead_models: dict[str, str] = {}
+        self._exhausted_keys: set[str] = set()
+        self._dead_keys: set[str] = set()
+        self._quota_reset_seconds: Optional[float] = None
+
+    def _key_label(self, api_key: str) -> str:
+        """برچسب خوانا و امن برای یک کلید."""
+        return self._key_labels.get(api_key, _mask_secret(api_key))
 
     def _build_system_prompt(self, batch: TranslationBatch, context: AcademicContext) -> str:
         """ایجاد پرامپت سیستمی سفارشی بر اساس موضوع و اصطلاحات مرتبط."""
@@ -156,11 +352,12 @@ class TranslationEngine:
 
         return json.dumps(payload, ensure_ascii=False, indent=2)
 
-    async def _call_llm_api(self, client: httpx.AsyncClient, model: str, system_prompt: str, user_payload: str) -> str:
-        """ارسال درخواست به اندپوینت chat/completions."""
+    async def _call_llm_api(self, client: httpx.AsyncClient, model: str, system_prompt: str, user_payload: str, api_key: Optional[str] = None) -> str:
+        """ارسال درخواست به اندپوینت chat/completions با کلید مشخص‌شده یا کلید جاری."""
         url = f"{self.base_url}/chat/completions"
+        key = api_key or (self.api_keys[0] if self.api_keys else "")
         headers = {
-            "Authorization": f"Bearer {self.api_key}",
+            "Authorization": f"Bearer {key}",
             "Content-Type": "application/json",
         }
         body = {
@@ -198,104 +395,166 @@ class TranslationEngine:
 
         try:
             for model_name in self.models:
-                if model_name in self._exhausted_models:
+                if model_name in self._dead_models:
                     continue
 
-                for attempt in range(self.max_retries_per_model):
-                    try:
-                        log.info(
-                            f"در حال ترجمه دسته {batch.batch_index} با مدل {model_name} (تلاش {attempt + 1}/{self.max_retries_per_model})..."
-                        )
-                        raw_resp = await self._call_llm_api(client, model_name, system_prompt, user_payload)
-                        parsed_dict = _extract_json_from_response(raw_resp)
+                # سهمیه در سطح کلید است؛ اگر همه‌ی کلیدها تمام شده باشند، تعویض مدل هم بی‌فایده است
+                available_keys = [
+                    k
+                    for k in self.api_keys
+                    if k not in self._exhausted_keys and k not in self._dead_keys
+                ]
+                if self.api_keys and not available_keys:
+                    break
 
-                        # اعتبارسنجی تطابق کلیدها
-                        # برای بلاک‌های خالی، از مدل انتظار کلید الزامی نداریم
-                        empty_keys = {
-                            f"C{i + 1}" for i, cue in enumerate(batch.cues) if not cue.clean_text
-                        }
-                        required_keys = expected_keys - empty_keys
+                for api_key in available_keys:
+                    # ۴۰۴ در سطح مدل است؛ با یک کلید دیگر هم تکرار نمی‌شود
+                    if model_name in self._dead_models:
+                        break
 
-                        missing = required_keys - set(parsed_dict.keys())
-                        if missing:
-                            log.warning(
-                                f"مدل {model_name} کلیدهای {missing} را بازنگرداند."
+                    for attempt in range(self.max_retries_per_model):
+                        try:
+                            log.info(
+                                f"در حال ترجمه دسته {batch.batch_index} با مدل {model_name} (تلاش {attempt + 1}/{self.max_retries_per_model})..."
                             )
+                            raw_resp = await self._call_llm_api(
+                                client, model_name, system_prompt, user_payload, api_key=api_key
+                            )
+                            parsed_dict = _extract_json_from_response(raw_resp)
+
+                            # اعتبارسنجی تطابق کلیدها
+                            # برای بلاک‌های خالی، از مدل انتظار کلید الزامی نداریم
+                            empty_keys = {
+                                f"C{i + 1}" for i, cue in enumerate(batch.cues) if not cue.clean_text
+                            }
+                            required_keys = expected_keys - empty_keys
+
+                            missing = required_keys - set(parsed_dict.keys())
+                            if missing:
+                                log.warning(
+                                    f"مدل {model_name} کلیدهای {missing} را بازنگرداند."
+                                )
+                                if attempt < self.max_retries_per_model - 1:
+                                    await asyncio.sleep(2.0)
+                                    continue
+                                break
+
+                            # موفقیت در ترجمه (بلاک‌های خالی با رشته تهی پر می‌شوند)
+                            result_map: dict[str, str] = {}
+                            for k in expected_keys:
+                                if k in parsed_dict:
+                                    result_map[k] = parsed_dict[k]
+                                else:
+                                    result_map[k] = ""
+                            return result_map
+
+                        except Exception as ex:
+                            err_name = type(ex).__name__
+                            err_msg = str(ex) or "Timeout or network dropped"
+                            resp_body = ""
+                            status_code = 0
+                            if isinstance(ex, httpx.HTTPStatusError):
+                                try:
+                                    resp_body = ex.response.text
+                                    status_code = ex.response.status_code
+                                except Exception:
+                                    pass
+
+                            last_error_str = f"[{model_name} | {self._key_label(api_key)}] {err_name}: {err_msg}"
+                            if resp_body:
+                                last_error_str += f" | {resp_body[:280]}"
+                            log.warning(
+                                f"خطا در مدل {model_name} (تلاش {attempt + 1}): {last_error_str}"
+                            )
+
+                            kind, wait_seconds = _triage_error(status_code, resp_body, err_msg)
+
+                            if kind == TRIAGE_DAILY_QUOTA:
+                                reset_in = _parse_retry_delay(resp_body) or _parse_retry_delay(err_msg)
+                                if reset_in is not None:
+                                    self._quota_reset_seconds = max(self._quota_reset_seconds or 0.0, reset_in)
+                                log.warning(
+                                    f"سقف روزانه‌ی {self._key_label(api_key)} تمام شد "
+                                    f"(هنگام استفاده از مدل {model_name}). سوئیچ به کلید بعدی..."
+                                )
+                                self._exhausted_keys.add(api_key)
+                                break
+
+                            if kind == TRIAGE_MODEL_UNAVAILABLE:
+                                log.warning(
+                                    f"مدل {model_name} برای این کلید در دسترس نیست (۴۰۴). بدون تلاش مجدد به مدل بعدی می‌رویم."
+                                )
+                                self._dead_models[model_name] = "مدل در دسترس نیست (۴۰۴)"
+                                break
+
+                            if kind == TRIAGE_FATAL:
+                                log.warning(
+                                    f"خطای غیرقابل بازیابی برای {self._key_label(api_key)} "
+                                    f"با مدل {model_name}. به کلید بعدی می‌رویم."
+                                )
+                                self._dead_keys.add(api_key)
+                                if not [k for k in self.api_keys if k not in self._dead_keys]:
+                                    self._dead_models[model_name] = f"خطای غیرقابل بازیابی ({status_code})"
+                                break
+
+                            # محدودیت نرخ لحظه‌ای، فشار سرور یا خطای گذرا → تلاش مجدد با تأخیر
                             if attempt < self.max_retries_per_model - 1:
-                                await asyncio.sleep(2.0)
+                                log.info(
+                                    f"صبر به مدت {wait_seconds:.1f} ثانیه قبل از تلاش مجدد (نوع خطا: {kind})..."
+                                )
+                                await asyncio.sleep(wait_seconds)
                                 continue
                             break
 
-                        # موفقیت در ترجمه (بلاک‌های خالی با رشته تهی پر می‌شوند)
-                        result_map: dict[str, str] = {}
-                        for k in expected_keys:
-                            if k in parsed_dict:
-                                result_map[k] = parsed_dict[k]
-                            else:
-                                result_map[k] = ""
-                        return result_map
-
-                    except Exception as ex:
-                        err_name = type(ex).__name__
-                        err_msg = str(ex) or "Timeout or network dropped"
-                        resp_body = ""
-                        status_code = 0
-                        if isinstance(ex, httpx.HTTPStatusError):
-                            try:
-                                resp_body = ex.response.text
-                                status_code = ex.response.status_code
-                            except Exception:
-                                pass
-
-                        full_err_text = f"{err_msg} {resp_body}".lower()
-                        last_error_str = f"[{model_name}] {err_name}: {err_msg}"
-                        log.warning(
-                            f"خطا در مدل {model_name} (تلاش {attempt + 1}): {last_error_str}"
-                        )
-
-                        # در صورت اتمام سقف روزانه یا سهمیه اکانت، بلافاصله به مدل بعدی سوئیچ کن
-                        is_daily_exhausted = (
-                            status_code == 429 and (
-                                "quota" in full_err_text
-                                or "per day" in full_err_text
-                                or "perday" in full_err_text
-                                or "exceeded" in full_err_text
-                                or "billing" in full_err_text
-                            )
-                        ) or (
-                            "quota exceeded" in full_err_text
-                            or "per day" in full_err_text
-                        )
-                        if is_daily_exhausted:
-                            log.warning(
-                                f"سقف سهمیه مدل {model_name} تمام شده است. سوئیچ فوری به مدل بعدی در زنجیره..."
-                            )
-                            self._exhausted_models.add(model_name)
-                            break
-
-                        # مدیریت هوشمند خطای ۵۰۳ (ترافیک لحظه‌ای سرور) و خطای ۴۲۹ (Rate Limit ثانیه‌ای/لحظه‌ای)
-                        is_overloaded = (
-                            status_code in (429, 503)
-                            or "503" in err_msg
-                            or "unavailable" in full_err_text
-                            or "high demand" in full_err_text
-                            or "rate" in full_err_text
-                            or "resource_exhausted" in full_err_text
-                        )
-                        wait_seconds = (6.0 * (attempt + 1)) if is_overloaded else (2.0 * (attempt + 1))
-
-                        if attempt < self.max_retries_per_model - 1:
-                            log.info(f"صبر به مدت {wait_seconds:.1f} ثانیه قبل از تلاش مجدد...")
-                            await asyncio.sleep(wait_seconds)
-                            continue
-                        break
-
-            raise RuntimeError(
-                f"همه مدل‌های موجود در زنجیره fallback شکست خوردند. آخرین خطا: {last_error_str}"
-            )
+            raise RuntimeError(self._build_failure_message(last_error_str))
         finally:
             if close_client:
                 await client.aclose()
+
+    def _build_failure_message(self, last_error_str: str) -> str:
+        """ساخت پیام خطای مفهومی همراه با دلیل کنار گذاشته شدن هر مدل و کلید."""
+        reasons: list[str] = []
+        for model_name in self.models:
+            if model_name in self._dead_models:
+                reasons.append(f"• {model_name}: {self._dead_models[model_name]}")
+
+        key_reasons: list[str] = []
+        for key in dict.fromkeys(self.api_keys):
+            label = self._key_label(key)
+            if key in self._dead_keys:
+                key_reasons.append(f"• {label}: کلید نامعتبر یا غیرمجاز")
+            elif key in self._exhausted_keys:
+                key_reasons.append(f"• {label}: سقف سهمیه‌ی روزانه تمام شده")
+
+        parts = ["همه مدل‌ها و کلیدهای موجود در زنجیره fallback شکست خوردند."]
+
+        if self._exhausted_keys:
+            parts.append(
+                f"سهمیه‌ی روزانه در سطح کلید است؛ {len(self._exhausted_keys)} کلید از "
+                f"{len(self.api_keys)} کلید پیکربندی‌شده تمام شده است."
+            )
+            if self._quota_reset_seconds:
+                parts.append(
+                    f"طبق پیام سرویس، سهمیه حدود {_humanize_duration(self._quota_reset_seconds)} دیگر آزاد می‌شود."
+                )
+            else:
+                parts.append("زمان دقیق آزادسازی توسط سرویس اعلام نشده است.")
+            parts.append(
+                "با افزودن کلید بیشتر به متغیر LLM_API_KEYS می‌توانید ظرفیت روزانه را افزایش دهید."
+            )
+
+        if len(self.api_keys) <= 1 and not self._exhausted_keys:
+            parts.append(
+                "فقط یک کلید پیکربندی شده است؛ برای افزایش ظرفیت، چند کلید را در LLM_API_KEYS قرار دهید."
+            )
+
+        if key_reasons:
+            parts.append("وضعیت کلیدها: " + " | ".join(key_reasons))
+        if reasons:
+            parts.append("وضعیت مدل‌ها: " + " | ".join(reasons))
+
+        parts.append(f"آخرین خطا: {last_error_str}")
+        return "\n".join(parts)
 
     async def translate_document(
         self,
@@ -303,24 +562,88 @@ class TranslationEngine:
         context: Optional[AcademicContext] = None,
         on_progress: Optional[Callable[[float, int, int], Awaitable[None]]] = None,
         batcher: Optional[ContextBatcher] = None,
+        checkpoint_store: Optional[CheckpointStore] = None,
+        source_hash: Optional[str] = None,
     ) -> SubtitleDocument:
-        """ترجمه کامل یک سند زیرنویس با مدیریت پیشرفت و گزارش درصد."""
+        """ترجمه کامل یک سند زیرنویس با مدیریت پیشرفت، ذخیره‌ی checkpoint و امکان از سرگیری.
+
+        اگر ``checkpoint_store`` و ``source_hash`` داده شوند، پیشرفت پس از هر دسته روی
+        دیسک ثبت می‌شود و در اجرای بعدی دسته‌های ترجمه‌شده دوباره ارسال نمی‌شوند.
+        در صورت شکست یک دسته، به‌جای دور ریختن کل سند، ``PartialTranslationError``
+        با سندِ نیمه‌ترجمه‌شده صادر می‌شود.
+        """
         ctx = context or AcademicContext()
         b_mgr = batcher or ContextBatcher()
+        resume_enabled = checkpoint_store is not None and bool(source_hash)
+
+        # بازیابی ترجمه‌های قبلی پیش از ساخت دسته‌ها تا کانتکست قبلی از متن فارسی ساخته شود
+        if resume_enabled:
+            existing = checkpoint_store.load(source_hash)
+            if existing and existing.total_cues == doc.total_cues:
+                restored = 0
+                for position, cue in enumerate(doc.cues):
+                    if position in existing.translations:
+                        cue.translated_text = existing.translations[position]
+                        restored += 1
+                if restored:
+                    log.info(
+                        f"ادامه‌ی ترجمه از checkpoint: {restored} از {doc.total_cues} بلاک از قبل آماده است."
+                    )
+            elif existing:
+                log.warning("checkpoint با تعداد بلاک‌های ناسازگار نادیده گرفته شد.")
+
         batches = b_mgr.create_batches(doc.cues, context=ctx)
 
         total_cues = doc.total_cues
-        translated_so_far = 0
+        translated_so_far = doc.translated_cues_count
+
+        if translated_so_far and on_progress:
+            await on_progress(
+                (translated_so_far / total_cues) * 100.0, translated_so_far, total_cues
+            )
 
         async with httpx.AsyncClient() as client:
             for batch in batches:
-                trans_map = await self.translate_batch(batch, ctx, client=client)
+                # دسته‌ای که در اجرای قبلی کامل شده، نیازی به ارسال مجدد ندارد
+                if all(cue.translated_text is not None for cue in batch.cues):
+                    continue
+
+                try:
+                    trans_map = await self.translate_batch(batch, ctx, client=client)
+                except Exception as exc:
+                    done = doc.translated_cues_count
+                    if done:
+                        if resume_enabled:
+                            try:
+                                checkpoint_store.save(
+                                    snapshot_document(doc, source_hash, ctx.topic)
+                                )
+                            except OSError as save_error:
+                                log.warning(f"ذخیره‌ی checkpoint ناموفق بود: {save_error}")
+
+                        raise PartialTranslationError(
+                            f"ترجمه پس از {done} از {total_cues} بلاک متوقف شد. "
+                            f"نتیجه‌ی نیمه‌کاره ذخیره شد و در اجرای بعدی ادامه پیدا می‌کند.\n"
+                            f"علت: {exc}",
+                            doc=doc,
+                            completed=done,
+                            total=total_cues,
+                            cause=exc,
+                        ) from exc
+                    raise
 
                 for i, cue in enumerate(batch.cues):
                     key = f"C{i + 1}"
                     cue.translated_text = trans_map.get(key, cue.clean_text)
 
                 translated_so_far += len(batch.cues)
+
+                if resume_enabled:
+                    try:
+                        checkpoint_store.save(snapshot_document(doc, source_hash, ctx.topic))
+                    except OSError as save_error:
+                        log.warning(f"ذخیره‌ی checkpoint ناموفق بود: {save_error}")
+
                 progress_pct = (translated_so_far / total_cues) * 100.0
 
                 if on_progress:
@@ -328,5 +651,9 @@ class TranslationEngine:
 
                 # مکث هوشمند بین بسته‌ها جهت رعایت سقف نرخ درخواست (RPM) در ارائه‌دهندگان رایگان (نظیر جمنای)
                 await asyncio.sleep(self.inter_batch_delay)
+
+        if resume_enabled:
+            # ترجمه کامل شد؛ checkpoint پاک می‌شود تا اجرای بعدی از صفر شروع کند
+            checkpoint_store.clear(source_hash)
 
         return doc

@@ -10,7 +10,8 @@ from pathlib import Path
 
 from .config import settings
 from .core.batcher import ContextBatcher
-from .core.engine import TranslationEngine
+from .core.checkpoint import CheckpointStore, source_fingerprint
+from .core.engine import PartialTranslationError, TranslationEngine
 from .core.models import AcademicContext
 from .core.srt_parser import SrtParser
 
@@ -50,6 +51,20 @@ async def async_main(args: argparse.Namespace) -> int:
     batcher = ContextBatcher(batch_size=args.batch_size)
     engine = TranslationEngine()
 
+    # ذخیره‌ی پیشرفت برای جلوگیری از هدر رفتن کار در صورت اتمام سهمیه یا قطع شبکه
+    source_hash = source_fingerprint(input_path) if not args.no_resume else None
+    checkpoint_store = CheckpointStore()
+
+    if source_hash:
+        existing = checkpoint_store.load(source_hash)
+        if existing and existing.total_cues == doc.total_cues and existing.completed_count:
+            print(
+                f"♻️ ترجمه‌ی نیمه‌تمام پیدا شد: {existing.completed_count} از {existing.total_cues} "
+                f"بلاک ({existing.progress_pct:.0f}٪) از قبل آماده است."
+            )
+        elif source_hash:
+            checkpoint_store.clear(source_hash)
+
     start_time = time.time()
 
     async def on_progress(pct: float, done: int, total: int) -> None:
@@ -62,8 +77,19 @@ async def async_main(args: argparse.Namespace) -> int:
             context=context,
             on_progress=on_progress,
             batcher=batcher,
+            checkpoint_store=checkpoint_store,
+            source_hash=source_hash,
         )
         print()  # خط جدید پس از اتمام نوار پیشرفت
+    except PartialTranslationError as e:
+        print()
+        partial_path = output_path.with_suffix(".partial.srt")
+        SrtParser.write_file(e.doc, partial_path, use_translated=True)
+        print(f"⚠️ ترجمه ناقص است: {e.completed} از {e.total} بلاک ({e.progress_pct:.0f}٪)", file=sys.stderr)
+        print(f"💾 نتیجه‌ی نیمه‌کاره ذخیره شد در: {partial_path.resolve()}", file=sys.stderr)
+        print("ℹ️ برای ادامه، همین دستور را دوباره اجرا کنید؛ از همان‌جا ادامه می‌دهد.", file=sys.stderr)
+        print(f"\n{e}", file=sys.stderr)
+        return 2
     except Exception as e:
         print(f"\n❌ خطای فرآیند ترجمه: {e}", file=sys.stderr)
         return 1
@@ -85,6 +111,11 @@ def main() -> None:
     parser.add_argument("-o", "--output", help="مسیر ذخیره فایل خروجی (.srt)")
     parser.add_argument("--topic", default="General Academic", help="زمینه یا درس دانشگاهی (مثلاً Machine Learning)")
     parser.add_argument("--batch-size", type=int, default=settings.batch_size, help="تعداد بلاک در هر دسته")
+    parser.add_argument(
+        "--no-resume",
+        action="store_true",
+        help="از سرگیری ترجمه‌ی نیمه‌تمام قبلی خودداری کن و از ابتدا شروع کن",
+    )
 
     args = parser.parse_args()
     exit_code = asyncio.run(async_main(args))

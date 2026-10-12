@@ -23,12 +23,20 @@ class Settings(BaseModel):
     llm_api_key: str = Field(
         default_factory=lambda: os.getenv("LLM_API_KEY", "")
     )
+    llm_api_keys: list[str] = Field(
+        default_factory=lambda: [
+            k.strip()
+            for k in os.getenv("LLM_API_KEYS", os.getenv("LLM_API_KEY", "")).split(",")
+            if k.strip()
+        ]
+    )
     llm_models: list[str] = Field(
         default_factory=lambda: [
             m.strip()
             for m in os.getenv(
                 "LLM_MODELS",
-                "gemini-3.1-flash-lite,gemini-flash-latest,gemini-3.6-flash,gemini-3-flash-preview,gemini-3.8-flash,gemini-3.5-flash-lite,gemini-flash-lite-latest",
+                "gemini-3.1-flash-lite,gemini-flash-latest,gemini-3.6-flash,"
+                "gemini-3-flash-preview,gemini-3.8-flash,gemini-3.5-flash-lite",
             ).split(",")
             if m.strip()
         ]
