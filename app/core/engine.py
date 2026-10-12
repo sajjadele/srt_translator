@@ -319,7 +319,7 @@ class TranslationEngine:
             self._key_labels[key] = f"کلید #{unique_keys} ({_mask_secret(key)})"
 
         self._dead_models: dict[str, str] = {}
-        self._exhausted_keys: set[str] = set()
+        self._exhausted_pairs: set[tuple[str, str]] = set()
         self._dead_keys: set[str] = set()
         self._quota_reset_seconds: Optional[float] = None
 
@@ -398,12 +398,9 @@ class TranslationEngine:
                 if model_name in self._dead_models:
                     continue
 
-                # سهمیه در سطح کلید است؛ اگر همه‌ی کلیدها تمام شده باشند، تعویض مدل هم بی‌فایده است
-                available_keys = [
-                    k
-                    for k in self.api_keys
-                    if k not in self._exhausted_keys and k not in self._dead_keys
-                ]
+                # کلید فقط در صورت خطای احراز هویت کنار گذاشته می‌شود؛ سهمیه‌ی روزانه
+                # برای هر جفت (کلید × مدل) جداست، پس با هر مدل سهمیه‌ی تازه داریم.
+                available_keys = [k for k in self.api_keys if k not in self._dead_keys]
                 if self.api_keys and not available_keys:
                     break
 
@@ -411,6 +408,10 @@ class TranslationEngine:
                     # ۴۰۴ در سطح مدل است؛ با یک کلید دیگر هم تکرار نمی‌شود
                     if model_name in self._dead_models:
                         break
+
+                    # این جفت کلید-مدل قبلاً سهمیه‌ی روزانه‌اش تمام شده
+                    if (model_name, api_key) in self._exhausted_pairs:
+                        continue
 
                     for attempt in range(self.max_retries_per_model):
                         try:
@@ -474,10 +475,10 @@ class TranslationEngine:
                                 if reset_in is not None:
                                     self._quota_reset_seconds = max(self._quota_reset_seconds or 0.0, reset_in)
                                 log.warning(
-                                    f"سقف روزانه‌ی {self._key_label(api_key)} تمام شد "
-                                    f"(هنگام استفاده از مدل {model_name}). سوئیچ به کلید بعدی..."
+                                    f"سهمیه‌ی روزانه‌ی مدل {model_name} با {self._key_label(api_key)} تمام شد "
+                                    f"(سهمیه برای هر جفت کلید×مدل جداست). به ترکیب بعدی می‌رویم..."
                                 )
-                                self._exhausted_keys.add(api_key)
+                                self._exhausted_pairs.add((model_name, api_key))
                                 break
 
                             if kind == TRIAGE_MODEL_UNAVAILABLE:
@@ -523,15 +524,18 @@ class TranslationEngine:
             label = self._key_label(key)
             if key in self._dead_keys:
                 key_reasons.append(f"• {label}: کلید نامعتبر یا غیرمجاز")
-            elif key in self._exhausted_keys:
-                key_reasons.append(f"• {label}: سقف سهمیه‌ی روزانه تمام شده")
 
-        parts = ["همه مدل‌ها و کلیدهای موجود در زنجیره fallback شکست خوردند."]
+        pair_reasons: list[str] = []
+        for model_name, key in sorted(self._exhausted_pairs):
+            pair_reasons.append(f"{model_name} + {self._key_label(key)}")
 
-        if self._exhausted_keys:
+        parts = ["همه ترکیب‌های مدل/کلید موجود در زنجیره fallback شکست خوردند."]
+
+        if self._exhausted_pairs:
             parts.append(
-                f"سهمیه‌ی روزانه در سطح کلید است؛ {len(self._exhausted_keys)} کلید از "
-                f"{len(self.api_keys)} کلید پیکربندی‌شده تمام شده است."
+                f"سهمیه‌ی روزانه برای هر جفت «کلید × مدل» جداگانه است (۵۰۰ درخواست برای هر ترکیب). "
+                f"{len(self._exhausted_pairs)} ترکیب از {len(self.models) * len(self.api_keys)} "
+                f"ترکیب ممکن تمام شده است."
             )
             if self._quota_reset_seconds:
                 parts.append(
@@ -540,14 +544,16 @@ class TranslationEngine:
             else:
                 parts.append("زمان دقیق آزادسازی توسط سرویس اعلام نشده است.")
             parts.append(
-                "با افزودن کلید بیشتر به متغیر LLM_API_KEYS می‌توانید ظرفیت روزانه را افزایش دهید."
+                "با افزودن کلید (LLM_API_KEYS) یا مدل (LLM_MODELS) بیشتر می‌توانید ظرفیت روزانه را افزایش دهید."
             )
 
-        if len(self.api_keys) <= 1 and not self._exhausted_keys:
+        if len(self.api_keys) <= 1 and not self._exhausted_pairs:
             parts.append(
                 "فقط یک کلید پیکربندی شده است؛ برای افزایش ظرفیت، چند کلید را در LLM_API_KEYS قرار دهید."
             )
 
+        if pair_reasons:
+            parts.append("ترکیب‌های تمام‌شده: " + " | ".join(pair_reasons))
         if key_reasons:
             parts.append("وضعیت کلیدها: " + " | ".join(key_reasons))
         if reasons:

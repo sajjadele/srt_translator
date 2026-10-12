@@ -264,7 +264,7 @@ async def test_per_minute_429_does_not_kill_the_model():
 
     assert result["C1"] == "سلام"
     # ۴۲۹ دقیقه‌ای نباید کلید را از رده خارج کند
-    assert "test-key" not in engine._exhausted_keys
+    assert ("model-a", "test-key") not in engine._exhausted_pairs
 
 
 @pytest.mark.asyncio
@@ -282,8 +282,8 @@ async def test_daily_quota_marks_key_and_reports_reset_time():
 
     # سقف روزانه نباید ۴ بار تکرار شود؛ همان بار اول کلید کنار گذاشته می‌شود
     assert mock_call.call_count == 1
-    assert "test-key" in engine._exhausted_keys
-    assert "سطح کلید" in str(exc_info.value)
+    assert ("model-a", "test-key") in engine._exhausted_pairs
+    assert "کلید × مدل" in str(exc_info.value)
     assert "18 ساعت و 11 دقیقه" in str(exc_info.value)
 
 
@@ -306,7 +306,7 @@ async def test_retired_model_is_skipped_without_retries():
     assert result["C1"] == "سلام"
     assert mock_call.call_count == 2
     assert "gemini-2.5-flash" in engine._dead_models
-    assert "gemini-2.5-flash" not in engine._exhausted_keys
+    assert all(m != "gemini-2.5-flash" for m, _ in engine._exhausted_pairs)
 
 
 # ---------------------------------------------------------------------------
@@ -345,7 +345,7 @@ def test_api_keys_deduplicated_and_labelled():
 
 @pytest.mark.asyncio
 async def test_quota_switches_to_second_key():
-    """مهم‌ترین رفتار: تمام شدن کلید اول نباید ترجمه را متوقف کند."""
+    """مهم‌ترین رفتار: تمام شدن سهمیه‌ی یک ترکیب نباید ترجمه را متوقف کند."""
     engine = TranslationEngine(
         api_keys=[KEY_A, KEY_B], models=["model-a"], max_retries_per_model=3, inter_batch_delay=0
     )
@@ -356,14 +356,40 @@ async def test_quota_switches_to_second_key():
             result = await engine.translate_batch(_one_cue_batch(), AcademicContext())
 
     assert result["C1"] == "سلام"
-    assert KEY_A in engine._exhausted_keys
-    assert KEY_B not in engine._exhausted_keys
+    # فقط جفت (مدل، کلید اول) تمام می‌شود — نه کل کلید
+    assert engine._exhausted_pairs == {("model-a", KEY_A)}
     # کلید دوم واقعاً استفاده شده است
     assert mock_call.call_args.kwargs["api_key"] == KEY_B
 
 
 @pytest.mark.asyncio
-async def test_all_keys_exhausted_reports_both_keys():
+async def test_quota_exhaustion_does_not_kill_other_models():
+    """سهمیه در سطح جفت (کلید × مدل) است: هر مدل سهمیه‌ی مستقل دارد."""
+    engine = TranslationEngine(
+        api_keys=[KEY_A],
+        models=["model-a", "model-b", "model-c"],
+        max_retries_per_model=1,
+        inter_batch_delay=0,
+    )
+
+    with patch.object(engine, "_call_llm_api", new_callable=AsyncMock) as mock_call:
+        # ترکیب اول پر است، دومی سالم است
+        mock_call.side_effect = [
+            _http_error(429, DAILY_QUOTA_BODY),
+            _http_error(429, DAILY_QUOTA_BODY),
+            '{"C1": "سلام"}',
+        ]
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            result = await engine.translate_batch(_one_cue_batch(), AcademicContext())
+
+    assert result["C1"] == "سلام"
+    # هر دو ترکیب جداگانه علامت خورده‌اند، ولی هیچ مدلی کشته نشده
+    assert engine._exhausted_pairs == {("model-a", KEY_A), ("model-b", KEY_A)}
+    assert engine._dead_models == {}
+
+
+@pytest.mark.asyncio
+async def test_all_pairs_exhausted_reports_pairs():
     engine = TranslationEngine(
         api_keys=[KEY_A, KEY_B], models=["model-a"], max_retries_per_model=2, inter_batch_delay=0
     )
@@ -374,9 +400,9 @@ async def test_all_keys_exhausted_reports_both_keys():
             await engine.translate_batch(_one_cue_batch(), AcademicContext())
 
     message = str(exc_info.value)
-    assert mock_call.call_count == 2  # هر کلید فقط یک بار
-    assert engine._exhausted_keys == {KEY_A, KEY_B}
-    assert "2 کلید از 2 کلید" in message
+    assert mock_call.call_count == 2  # هر ترکیب فقط یک بار
+    assert engine._exhausted_pairs == {("model-a", KEY_A), ("model-a", KEY_B)}
+    assert "2 ترکیب از 2 ترکیب" in message
     assert "LLM_API_KEYS" in message
     # هیچ کلید واقعی نباید در پیام خطا لو برود
     assert KEY_A not in message
